@@ -4239,9 +4239,47 @@ def _build_long_range_raw(api_key, start="1990-01-01"):
             _yoy = (_cpi / _cpi.shift(12) - 1) * 100
             out["cpi_yoy_s"] = _yoy.dropna().resample("D").ffill()
     except Exception: pass
-    # cape/fpe — 원본 부재 (외부 스크래퍼 의존). on_the_fly 가 알아서 None 처리.
     out.setdefault("cape_s", None)
     out.setdefault("fpe_s", None)
+    out.setdefault("te_s", None)
+    out.setdefault("eg_s", None)
+    # STEP A-2 / STEP 5-1 / STEP 5-3 / STEP 5-8: historical_loader 합본 적재
+    # — HY OAS Wayback 합본 (1996-12~) / CAPE multpl (1990~) /
+    #   trailing earnings te+eg / forward_pe 자동 누적 + daily ffill
+    try:
+        from historical_loader import load_hy_oas_history, load_cape_history, load_forward_pe_history
+        _hy_hist = load_hy_oas_history()
+        if _hy_hist is not None and len(_hy_hist) > 0:
+            out["hy_s"] = _hy_hist  # FRED 직접 fetch 결과 override (3년 제한 우회)
+        _cape_hist = load_cape_history()
+        if _cape_hist is not None and len(_cape_hist) > 0:
+            out["cape_s"] = _cape_hist
+        _fpe_hist = load_forward_pe_history()
+        if _fpe_hist is not None and len(_fpe_hist) > 0:
+            try:
+                _idx = pd.date_range(start=_fpe_hist.index.min(),
+                                      end=pd.Timestamp.now().normalize(), freq="D")
+                out["fpe_s"] = _fpe_hist.reindex(_idx, method="ffill")
+            except Exception:
+                out["fpe_s"] = _fpe_hist
+        try:
+            _te_path = SD / "cache" / "trailing_earnings_history.json"
+            if _te_path.exists():
+                with open(_te_path, "r", encoding="utf-8") as _f:
+                    _te_obj = json.load(_f)
+                _te_df = pd.DataFrame(_te_obj.get("data") or [])
+                if len(_te_df) > 0:
+                    _te_df["date"] = pd.to_datetime(_te_df["date"])
+                    _te_df = _te_df.set_index("date").sort_index()
+                    if "te" in _te_df.columns:
+                        _te = _te_df["te"].dropna()
+                        if len(_te) > 0: out["te_s"] = _te
+                    if "eg" in _te_df.columns:
+                        _eg = _te_df["eg"].dropna()
+                        if len(_eg) > 0: out["eg_s"] = _eg
+        except Exception: pass
+    except Exception:
+        pass
     return out
 
 
@@ -4346,9 +4384,42 @@ def _month_business_days(year, month):
     return out
 
 
+def _derive_season_from_boxes(box_states):
+    """V3.12.1+ (B): 36박스 결과에서 일별 best season 산정.
+    - 점수 = fire / valid (None 박스 분모 제외).
+    - best = ratio desc → fire abs desc → 정의서 우선순위 (겨울>가을>여름>봄).
+    - 접두사: V3.8 — 인접 계절 fire ≥ 4 시 '초'/'늦' 부착.
+    - 반환 (season_with_prefix or None, fire_dict)."""
+    if not box_states: return None, {}
+    if not all(len(lst) > 0 for lst in box_states.values()): return None, {}
+    fire = {"봄": 0, "여름": 0, "가을": 0, "겨울": 0}
+    valid = {"봄": 0, "여름": 0, "가을": 0, "겨울": 0}
+    for _se, _lst in box_states.items():
+        for _lbl, _b in _lst:
+            if _b is None: continue
+            valid[_se] += 1
+            if _b: fire[_se] += 1
+    ratios = {_se: (fire[_se] / valid[_se] if valid[_se] else 0.0) for _se in fire}
+    if max(ratios.values()) <= 0:
+        return None, fire
+    # 정의서 우선순위 (겨울 가장 보수, 봄 가장 후순) — 동점 시 보수적 선택
+    _priority = {"겨울": 0, "가을": 1, "여름": 2, "봄": 3}
+    best = sorted(fire.keys(), key=lambda s: (-ratios[s], -fire[s], _priority[s]))[0]
+    # V3.8 접두사: 인접 계절 fire ≥ 4
+    _cycle = ["봄", "여름", "가을", "겨울"]
+    _bi = _cycle.index(best)
+    _nxt = _cycle[(_bi + 1) % 4]; _prv = _cycle[(_bi - 1) % 4]
+    label = best
+    if fire.get(_prv, 0) >= 4: label = "늦" + best
+    elif fire.get(_nxt, 0) >= 4: label = "초" + best
+    return label, fire
+
+
 def _eval_one_day(target_date, raw_data, obs_rows_by_date):
     """단일 영업일 평가. live → backfill → on_the_fly 우선순위.
-    box_states: 그 시점 28박스 boolean (raw_data 기반 mirror) — 항상 raw 로 재계산."""
+    box_states: 그 시점 36박스 boolean (raw_data 기반 mirror) — 항상 raw 로 재계산.
+    season: V3.12.1+ (B) 부터 box_states 기반으로 재산정 (obs.jsonl row 미수정).
+    box_states fail 시 chosen.season 폴백."""
     from datetime import date as _d
     d_iso = target_date.isoformat()
     rows = obs_rows_by_date.get(d_iso) or []
@@ -4359,32 +4430,38 @@ def _eval_one_day(target_date, raw_data, obs_rows_by_date):
         chosen = live[-1]; src = "live"
     elif bf:
         chosen = bf[-1]; src = "backfill"
-    # 박스 상태는 항상 raw_data + offset 기반 (live/backfill row 에는 boolean 미저장)
     _today = _d.today()
     _off = max(0, (_today - target_date).days)
     try:
-        _box_diag = _diagnose_box_booleans(raw_data, _off)
-        _box_states = {
-            "봄":   [(_lbl, _b) for _lbl, _b in _box_diag.get("spring", [])],
-            "여름": [(_lbl, _b) for _lbl, _b in _box_diag.get("summer", [])],
-            "가을": [(_lbl, _b) for _lbl, _b in _box_diag.get("autumn", [])],
-            "겨울": [(_lbl, _b) for _lbl, _b in _box_diag.get("winter", [])],
-        }
+        # V3.12.1: 9박스 (auto_season label 1:1) — 계절별 9개 균일
+        _box_states = _diagnose_9boxes_at_offset(raw_data, _off)
     except Exception as _be:
         print(f"[box diag fail {target_date}] {type(_be).__name__}: {_be}")
         _box_states = {}
+    # STEP C: 단기 경보 카드 5종 — 박스와 무관 별도 출력
+    try:
+        from short_term_alerts import evaluate_short_term_alerts
+        _alerts = evaluate_short_term_alerts(target_date, raw_data)
+    except Exception as _ae:
+        print(f"[alerts fail {target_date}] {type(_ae).__name__}: {_ae}")
+        _alerts = {}
+    # V3.12.1+ (B): box_states 기반 일별 season 재산정
+    _box_season, _box_fire = _derive_season_from_boxes(_box_states)
     if chosen is not None:
-        _ss = {
+        _ss_obs = {
             "봄":   chosen.get("season_score_spring") or 0,
             "여름": chosen.get("season_score_summer") or 0,
             "가을": chosen.get("season_score_autumn") or 0,
             "겨울": chosen.get("season_score_winter") or 0,
         }
+        # box-derived 우선, 실패 시 obs row 폴백
+        _final_season = _box_season if _box_season is not None else chosen.get("season")
+        _final_scores = _box_fire if _box_fire else _ss_obs
         return {
             "date": d_iso,
             "source": src,
-            "season": chosen.get("season"),
-            "season_scores": _ss,
+            "season": _final_season,
+            "season_scores": _final_scores,
             "history_top1_id": chosen.get("history_era_top1"),
             "history_top1_score": chosen.get("history_score_top1"),
             "history_top2_id": chosen.get("history_era_top2"),
@@ -4392,8 +4469,9 @@ def _eval_one_day(target_date, raw_data, obs_rows_by_date):
             "history_top3_id": chosen.get("history_era_top3"),
             "history_top3_score": chosen.get("history_score_top3"),
             "macro_score": chosen.get("mac_score"),
-            "active_boxes": _ss,
+            "active_boxes": _final_scores,
             "box_states": _box_states,
+            "alerts": _alerts,
         }
     otf = _compute_on_the_fly(target_date, raw_data)
     if otf.get("source") == "unavailable":
@@ -4402,13 +4480,17 @@ def _eval_one_day(target_date, raw_data, obs_rows_by_date):
                 "history_top1_score": None, "history_top2_id": None,
                 "history_top2_score": None, "history_top3_id": None,
                 "history_top3_score": None, "macro_score": None,
-                "active_boxes": {}, "box_states": _box_states}
+                "active_boxes": {}, "box_states": _box_states,
+                "alerts": _alerts}
     _hm = otf.get("history_match") or {}
+    # box-derived 우선, 실패 시 on_the_fly 결과 폴백
+    _otf_season = _box_season if _box_season is not None else otf.get("season")
+    _otf_scores = _box_fire if _box_fire else (otf.get("season_scores") or {})
     return {
         "date": d_iso,
         "source": "on_the_fly",
-        "season": otf.get("season"),
-        "season_scores": otf.get("season_scores") or {},
+        "season": _otf_season,
+        "season_scores": _otf_scores,
         "history_top1_id":   _hm.get("era_top1"),
         "history_top1_score": _hm.get("score_top1"),
         "history_top2_id":   _hm.get("era_top2"),
@@ -4416,8 +4498,9 @@ def _eval_one_day(target_date, raw_data, obs_rows_by_date):
         "history_top3_id":   _hm.get("era_top3"),
         "history_top3_score": _hm.get("score_top3"),
         "macro_score": None,
-        "active_boxes": otf.get("active_boxes") or {},
+        "active_boxes": _otf_scores,
         "box_states": _box_states,
+        "alerts": _alerts,
     }
 
 
@@ -4462,33 +4545,50 @@ def _compute_month_summary(daily_results):
     elif n_era_tr <= 4 and n_season_tr <= 2: vol = "중간"
     else: vol = "높음"
     avg_std = float(_np.mean(list(stds.values()))) if stds else 0.0
-    # 박스별 fire 빈도 집계 (계절 → [(label, fire_count, valid_days), ...])
-    # box_states 가 비어있는 날은 "raw 부족" 으로 카운트하되 valid 일수에는 포함 X
-    # 단 box_states 가 빈 list 만 갖고 있어도 (e.g. {"봄": [], ...}) 28박스 평가
-    # 시도한 것으로 친다 — _diagnose_box_booleans 자체가 fail 안 했음을 의미.
+    # 박스별 valid/fire 분리: value 가 None 인 일자는 valid 에서 제외 (평가 불가)
     box_fire = {"봄": {}, "여름": {}, "가을": {}, "겨울": {}}
-    box_valid_days = 0
+    box_valid_days = 0  # 박스 시스템 자체가 동작한 일수 (top-level)
     box_eval_failed_days = 0
     for r in daily_results:
         bs = r.get("box_states")
         if bs is None or bs == {}:
             box_eval_failed_days += 1
             continue
-        # 28박스 중 하나라도 라벨이 있으면 valid
         if all(len(lst) == 0 for lst in bs.values()):
             box_eval_failed_days += 1
             continue
         box_valid_days += 1
         for _se, _list in bs.items():
             for _lbl, _b in _list:
-                _slot = box_fire[_se].setdefault(_lbl, {"fire": 0, "label": _lbl})
+                _slot = box_fire[_se].setdefault(_lbl, {"fire": 0, "valid": 0, "label": _lbl})
+                if _b is None: continue  # 평가 불가 — 분모에 안 들어감
+                _slot["valid"] += 1
                 if _b: _slot["fire"] += 1
     box_aggregated = {}
     for _se in ("봄", "여름", "가을", "겨울"):
         _items = []
         for _lbl, _slot in box_fire[_se].items():
-            _items.append((_lbl, _slot["fire"], box_valid_days))
+            _items.append((_lbl, _slot["fire"], _slot["valid"]))  # per-box valid
         box_aggregated[_se] = _items
+    # ── STEP C: 단기 경보 카드 5종 월별 집계 ──
+    _alert_cards = ("변동성_폭발", "급락", "신용_급격_확장", "단기_역전", "변동성_클러스터")
+    _alert_fire_by_card = {c: 0 for c in _alert_cards}
+    _alert_daily_fires = []
+    for r in daily_results:
+        a = r.get("alerts") or {}
+        if not a: continue
+        n = 0
+        for c in _alert_cards:
+            if a.get(c):
+                _alert_fire_by_card[c] += 1
+                n += 1
+        _alert_daily_fires.append(n)
+    _alert_avg = (sum(_alert_daily_fires) / len(_alert_daily_fires)) if _alert_daily_fires else 0.0
+    _alert_max = max(_alert_daily_fires) if _alert_daily_fires else 0
+    if _alert_avg >= 2.0: _alert_sev = ("shock", "🔴 충격")
+    elif _alert_avg >= 1.0: _alert_sev = ("alert", "🟠 경계")
+    elif _alert_avg >= 0.3: _alert_sev = ("warn", "🟡 주의")
+    else: _alert_sev = ("none", "🟢 잠잠")
     return {
         "season_distribution": dict(season_counter),
         "dominant_season": dominant,
@@ -4503,6 +4603,12 @@ def _compute_month_summary(daily_results):
         "box_aggregated": box_aggregated,
         "box_valid_days": box_valid_days,
         "box_eval_failed_days": box_eval_failed_days,
+        "alerts_fire_by_card": _alert_fire_by_card,
+        "alerts_avg_per_day": _alert_avg,
+        "alerts_max_in_day": _alert_max,
+        "alerts_severity_key": _alert_sev[0],
+        "alerts_severity_label": _alert_sev[1],
+        "alerts_n_eval_days": len(_alert_daily_fires),
     }
 
 
@@ -4526,6 +4632,264 @@ def _compute_timeline(daily_results):
             cur["n_days"] += 1
     if cur is not None: timeline.append(cur)
     return timeline
+
+
+def _inv_state_at_offset(s, offset, lookback=252):
+    """V3.12.1: _inv_state 의 시점 가변 버전. date-based trim 후 production 로직 동일.
+    offset=0 이면 _inv_state 와 동일 출력."""
+    if s is None: return None
+    s2 = _trim_series_at_offset(s, offset)
+    if s2 is None: return None
+    s2 = s2.dropna()
+    if len(s2) < 60: return None
+    cur = float(s2.iloc[-1])
+    tail = s2.iloc[-min(len(s2), lookback):]
+    peak_pp = float(tail.min())
+    s_60d = float(s2.iloc[-60]) if len(s2) >= 60 else None
+    s_6m  = float(s2.iloc[-126]) if len(s2) >= 126 else None
+    if s_60d is not None and s_60d >= 0 and cur < 0: return "entering"
+    if cur < 0 and s_60d is not None and (cur - s_60d) <= -0.10: return "deepening"
+    if cur < 0 and s_6m is not None and s_6m < 0 and peak_pp < 0:
+        rec_pct = (cur - peak_pp) / abs(peak_pp) * 100
+        if rec_pct < 50: return "deep_stable"
+    if peak_pp < 0:
+        rec_pct = (cur - peak_pp) / abs(peak_pp) * 100
+        if rec_pct >= 50: return "recovering"
+    if cur > 0 and peak_pp >= 0: return "normal"
+    return None
+
+
+def _diagnose_9boxes_at_offset(raw, offset):
+    """V3.12.1: 시점 가변 4 × 9 = 36 박스. 라벨은 _SEASON_BOX_HELP / auto_season 과
+    1:1 일치. fpe/tpe/cape/spy_info 의존 박스는 raw 부족 시 False (⬜) 로 폴백."""
+    qqq = raw.get("qqq_s"); ff = raw.get("ff_s"); hy = raw.get("hy_s")
+    unrate = raw.get("unrate_s"); cpi = raw.get("cpi_yoy_s")
+    fpe = raw.get("fpe_s"); cape = raw.get("cape_s")
+    sox = raw.get("sox_s"); spx = raw.get("spx_s"); rsp = raw.get("rsp_s"); spy = raw.get("spy_s")
+    wti = raw.get("wti_s"); vix = raw.get("vix_s"); umich = raw.get("umich_s")
+    drccl = raw.get("drccl_s"); payems = raw.get("payems_s")
+    inv3m10y = raw.get("t10y3m_s")
+    # ── inversion 상태 ──
+    _inv = _inv_state_at_offset(inv3m10y, offset)
+    # ── HY ──
+    hy_now_raw = _safe_iloc_at(hy, offset)
+    hy_pct = (hy_now_raw * 100) if (hy_now_raw is not None and hy_now_raw <= 1.0) else hy_now_raw
+    hy_6m = _abs_change_at(hy, offset, 180)
+    # peak drop: 최근 252일 peak 대비 4% 이하 진입했는지 (date-based)
+    hy_peak_drop = False
+    try:
+        _hy_t = _trim_series_at_offset(hy, offset)
+        if _hy_t is not None and len(_hy_t) >= 252:
+            _w = _hy_t.iloc[-252:]
+            _peak = float(_w.max())
+            _peak_pct = _peak * 100 if _peak <= 1.0 else _peak
+            if _peak_pct >= 5.0 and hy_pct is not None and hy_pct < 4.0:
+                hy_peak_drop = True
+    except Exception: pass
+    # ── FF ──
+    ff_now = _safe_iloc_at(ff, offset)
+    ff_6m_chg = _abs_change_at(ff, offset, 180)
+    ff_3m_chg = _abs_change_at(ff, offset, 90)
+    ff_pos_pct = _percentile_at(ff, offset, 252 * 10)
+    if ff_pos_pct is None: ff_pos_pct = _percentile_at(ff, offset, 252 * 5)
+    if ff_pos_pct is None: ff_pos_pct = _percentile_at(ff, offset, 252 * 3)
+    ff_low_zone = (ff_pos_pct is not None and ff_pos_pct < 30)
+    ff_high_zone = (ff_pos_pct is not None and ff_pos_pct >= 70)
+    spring_cut = (ff_3m_chg is not None and ff_3m_chg < 0) and ff_low_zone
+    autumn_cut = (ff_3m_chg is not None and ff_3m_chg < 0) and ff_high_zone
+    # ── 실업 ──
+    un_now = _safe_iloc_at(unrate, offset)
+    un_3m = _abs_change_at(unrate, offset, 90)
+    # ── PAYEMS 월간 변화 (date-based trim 후 마지막 2 entry 차이) ──
+    payems_chg = None
+    try:
+        _p_t = _trim_series_at_offset(payems, offset)
+        if _p_t is not None:
+            _p = _p_t.dropna()
+            if len(_p) >= 2:
+                payems_chg = float(_p.iloc[-1]) - float(_p.iloc[-2])
+    except Exception: pass
+    # ── QQQ DD 52w (date-based) ──
+    qqq_dd = None
+    try:
+        _qqq_t = _trim_series_at_offset(qqq, offset)
+        if _qqq_t is not None and len(_qqq_t) >= 252:
+            _w = _qqq_t.iloc[-252:]
+            cur = float(_qqq_t.iloc[-1]); high = float(_w.max())
+            if high > 0: qqq_dd = (cur / high - 1) * 100
+    except Exception: pass
+    qqq_dd_deep_neg25 = (qqq_dd is not None and qqq_dd < -25)
+    qqq_dd_deep_neg20 = (qqq_dd is not None and qqq_dd < -20)
+    qqq_dd_deep_neg15 = (qqq_dd is not None and qqq_dd < -15)
+    # ── CPI ──
+    cpi_now = _safe_iloc_at(cpi, offset)
+    cpi_3m_chg = _abs_change_at(cpi, offset, 90) if cpi is not None else None
+    cpi_yoy_below_3 = (cpi_now is not None and cpi_now < 3)
+    # ── 변동률 ──
+    sox_3m = _pct_change_at(sox, offset, 63); spx_3m = _pct_change_at(spx, offset, 63)
+    sox_6m = _pct_change_at(sox, offset, 126); spx_6m = _pct_change_at(spx, offset, 126)
+    sox_1m = _pct_change_at(sox, offset, 22); spx_1m = _pct_change_at(spx, offset, 22)
+    rsp_6m = _pct_change_at(rsp, offset, 126); qqq_6m = _pct_change_at(qqq, offset, 126)
+    spy_1m = _pct_change_at(spy, offset, 22); rsp_1m = _pct_change_at(rsp, offset, 22)
+    wti_3m = _pct_change_at(wti, offset, 63)
+    # ── VIX (date-based 90D max) ──
+    vix_now = _safe_iloc_at(vix, offset)
+    vix_90max = None
+    try:
+        _vix_t = _trim_series_at_offset(vix, offset)
+        if _vix_t is not None and len(_vix_t) >= 30:
+            if hasattr(_vix_t, "index") and isinstance(_vix_t.index, pd.DatetimeIndex):
+                _ref = _vix_t.index[-1]
+                _w = _vix_t[(_vix_t.index >= _ref - pd.Timedelta(days=90)) & (_vix_t.index <= _ref)]
+            else:
+                _w = _vix_t.iloc[-90:]
+            if len(_w) > 0: vix_90max = float(_w.max())
+    except Exception: pass
+    # ── fpe / cape ──
+    fpe_now = _safe_iloc_at(fpe, offset)
+    cape_now = _safe_iloc_at(cape, offset)
+    # ── 소비 ──
+    umich_now = _safe_iloc_at(umich, offset)
+    drccl_now = _safe_iloc_at(drccl, offset)
+    consumer_ok = ((umich_now is not None and umich_now > 70)
+                   or (drccl_now is not None and drccl_now < 4))
+    # ── 매크로 동시 트리거 (실업/공포/조정 중 2개+) ──
+    spring_multi = 0
+    if un_now is not None and un_now >= 4: spring_multi += 1
+    if vix_90max is not None and vix_90max >= 35 and vix_now is not None and vix_now < 30: spring_multi += 1
+    if qqq_dd is not None and qqq_dd < -25: spring_multi += 1
+    # ── 신용 디커플링 (가을): HY 6M↑ + VIX 낮음 ──
+    hy_decoup = bool(hy_6m is not None and hy_6m > 0
+                     and vix_now is not None and vix_now < 20
+                     and hy_pct is not None and hy_pct > 3.5)
+    # ── WTI 충격 (가을): WTI 3M > 15 AND SPX 3M < 0 ──
+    wti_shock = bool(wti_3m is not None and spx_3m is not None and wti_3m > 15 and spx_3m < 0)
+    # ── earnings — spy_info / fpe history 미적재 → 영구 평가 불가 (None) ──
+    earnings_evaluable = False  # long_range_raw 에 spy_info historical 없음
+    # ── 평가 가능성 플래그 ──
+    hy_eval = (hy is not None and len(hy) > 0 and hy_pct is not None)
+    hy_peak_eval = (hy is not None and len(hy) > offset + 252)
+    qqq_dd_eval = (qqq_dd is not None)
+    consumer_eval = (umich_now is not None or drccl_now is not None)
+    fpe_eval = (fpe_now is not None)
+    cape_eval = (cape_now is not None)
+    val_or_eval = (fpe_eval or cape_eval)  # fpe OR cape
+    # ── STEP 5-8 trailing fallback raw — fpe 부재 시 te/eg 사용 ──
+    te_now = _safe_iloc_at(raw.get("te_s"), offset)
+    eg_now = _safe_iloc_at(raw.get("eg_s"), offset)
+    te_3m_chg = _abs_change_at(raw.get("te_s"), offset, 90)
+    spring_multi_eval = (un_now is not None and vix_90max is not None and qqq_dd is not None)
+
+    def _v(value, *deps):
+        if any(d is None for d in deps): return None
+        return bool(value)
+
+    # ── STEP 5-8 fundamental 박스 trailing fallback ──
+    if fpe_now is not None or cape_now is not None:
+        spring5_val = bool((fpe_now is not None and fpe_now <= 18)
+                            or (cape_now is not None and cape_now <= 25))
+    elif te_now is not None and eg_now is not None:
+        spring5_val = bool(te_now <= 23 and eg_now < 0)
+    else:
+        spring5_val = None
+    summer5_val = None if fpe_now is None else bool(fpe_now < 22)
+    if fpe_now is not None or cape_now is not None:
+        autumn5_val = bool((fpe_now is not None and fpe_now >= 22)
+                            or (cape_now is not None and cape_now >= 35))
+    else:
+        autumn5_val = None
+    autumn9_val = None if not cape_eval else bool(cape_now >= 35)
+    if earnings_evaluable:
+        winter5_val = False
+    elif te_3m_chg is not None and eg_now is not None:
+        winter5_val = bool(te_3m_chg > 0 and eg_now < 0)
+    else:
+        winter5_val = None
+
+    # ── 9박스 정의 (auto_season label 1:1, None = 평가 불가) ──
+    spring = [
+        ("채권: 역전 정상화 진행 중", _v(_inv == "recovering", _inv)),
+        ("신용: HY 정점 후 4% 진입",
+            None if not hy_peak_eval else _v(hy_peak_drop, hy_pct)),
+        ("연준: 저점권 인하 진행",
+            _v(spring_cut, ff_3m_chg, ff_pos_pct)),
+        ("실적: 나쁘다 (역실적)",
+            None if not earnings_evaluable else False),
+        ("밸류: 재평가 완료", spring5_val),
+        ("실업률 4% 돌파 또는 0.5%p 진입",
+            None if (un_now is None and un_3m is None) else
+            bool((un_now is not None and un_now >= 4) or (un_3m is not None and un_3m > 0.5))),
+        ("바닥권 도달 (DD < -25%)",
+            None if not qqq_dd_eval else bool(qqq_dd < -25)),
+        ("인플레 명시적 종결",
+            _v(cpi_3m_chg is not None and cpi_3m_chg < 0 and cpi_yoy_below_3, cpi_3m_chg, cpi_now)),
+        ("매크로 동시 트리거 (실업/공포/조정 중 2개+)",
+            None if not spring_multi_eval else bool(spring_multi >= 2)),
+    ]
+    summer = [
+        ("채권: 3M10Y 정상", _v(_inv == "normal", _inv)),
+        ("신용: HY < 4%", _v(hy_pct is not None and hy_pct < 4, hy_pct)),
+        ("연준: 안정 유지", _v(ff_6m_chg is not None and abs(ff_6m_chg) < 0.5, ff_6m_chg)),
+        ("실적: 좋고 가속",
+            None if not earnings_evaluable else False),
+        ("밸류: 정당화 가능", summer5_val),
+        ("고용 강세",
+            _v(un_3m is not None and un_3m <= 0
+               and payems_chg is not None and payems_chg > 150,
+               un_3m, payems_chg)),
+        ("소비 버팀",
+            None if not consumer_eval else bool(consumer_ok)),
+        ("반도체 동행",
+            _v(sox_6m is not None and spx_6m is not None and sox_6m > spx_6m, sox_6m, spx_6m)),
+        ("시장 폭 건강",
+            _v(rsp_6m is not None and qqq_6m is not None and rsp_6m > 0 and qqq_6m > 0,
+               rsp_6m, qqq_6m)),
+    ]
+    autumn = [
+        ("채권: 3M10Y 역전 진입/심화",
+            _v(_inv in ("entering", "deepening", "deep_stable"), _inv)),
+        ("신용: HY 6M 변화 > 0", _v(hy_6m is not None and hy_6m > 0, hy_6m)),
+        ("연준: 고점 인하/긴축",
+            _v(autumn_cut or (ff_6m_chg is not None and ff_6m_chg > 0),
+               ff_6m_chg, ff_pos_pct)),
+        ("실적: 아직 좋다",
+            None if not earnings_evaluable else False),
+        ("밸류: 극단 (OR)", autumn5_val),
+        ("신용 디커플링",
+            _v(hy_decoup, hy_6m, vix_now, hy_pct)),
+        ("인플레 디커플링 (WTI 충격)",
+            _v(wti_shock, wti_3m, spx_3m)),
+        ("반도체 선행 약세",
+            _v(sox_3m is not None and spx_3m is not None and spx_6m is not None
+               and sox_3m < spx_3m and spx_6m > 0, sox_3m, spx_3m, spx_6m)),
+        ("PER 역사적 극단", autumn9_val),
+    ]
+    winter = [
+        ("채권: 역전 정상화 진행", _v(_inv == "recovering", _inv)),
+        ("신용: HY > 5% (벌어진 상태)", _v(hy_pct is not None and hy_pct > 5, hy_pct)),
+        ("연준: 진짜 인하 진행 중", _v(ff_3m_chg is not None and ff_3m_chg < 0, ff_3m_chg)),
+        ("실적: 2분기 연속 감소",
+            None if not earnings_evaluable else False),
+        ("밸류: PER 튐 (주가<실적)", winter5_val),
+        ("하락 둔화 (DD<-20% & 1M ±3%)",
+            _v(qqq_dd_deep_neg20 and spx_1m is not None and abs(spx_1m) < 3, qqq_dd, spx_1m)),
+        ("실업률 폭증", _v(un_3m is not None and un_3m > 0.5, un_3m)),
+        ("메가캡 의존 (RSP 약세)",
+            _v(spy_1m is not None and rsp_1m is not None and spy_1m > 0 and rsp_1m < 0,
+               spy_1m, rsp_1m)),
+        ("반도체 선행 바닥 신호",
+            _v(sox_1m is not None and spx_1m is not None and sox_1m > spx_1m
+               and qqq_dd_deep_neg15, sox_1m, spx_1m, qqq_dd)),
+    ]
+    def _norm(v):
+        if v is None: return None
+        return bool(v)
+    return {
+        "봄": [(_l, _norm(_b)) for _l, _b in spring],
+        "여름": [(_l, _norm(_b)) for _l, _b in summer],
+        "가을": [(_l, _norm(_b)) for _l, _b in autumn],
+        "겨울": [(_l, _norm(_b)) for _l, _b in winter],
+    }
 
 
 def _diagnose_box_booleans(raw, offset):
@@ -4787,16 +5151,45 @@ def _render_query_result(result):
                     st.markdown(f"<span style='color:{_bx_m}'>박스 정보 없음</span>", unsafe_allow_html=True)
                 else:
                     for _lbl, _fire, _valid in _items:
-                        _pct = (_fire * 100 / _valid) if _valid else 0
-                        _check = "✅" if _pct >= 50 else ("🟡" if _pct > 0 else "⬜")
-                        _color = _bx_g if _pct >= 50 else (C.get("gold", "#EF9F27") if _pct > 0 else _bx_m)
+                        if _valid == 0:
+                            _check = "⊘"; _color = _bx_m
+                            _detail = "평가 불가 — 데이터 없음"
+                        else:
+                            _pct = _fire * 100 / _valid
+                            _on = (_pct >= 50)
+                            _check = "✅" if _on else "⬜"
+                            _color = _bx_g if _on else _bx_m
+                            _detail = f"{_fire}/{_valid}일"
                         st.markdown(
                             f"<span style='color:{_color};font-size:var(--mac-fs-md)'>"
                             f"{_check} {_lbl} <span style='color:{_bx_m};font-size:var(--mac-fs-sm)'>"
-                            f"({_fire}/{_valid}일 · {_pct:.0f}%)</span></span>",
+                            f"({_detail})</span></span>",
                             unsafe_allow_html=True,
                         )
                 st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
+    # ── STEP C: 단기 경보 보조 라인 (박스 다수결과 무관 별도 출력) ──
+    # 단기 경보 = 1M 윈도우 변동성 일반 신호. 메인 계절 변경 X.
+    _alert_sev_key = summary.get("alerts_severity_key") or "none"
+    if _alert_sev_key != "none":
+        _alert_sev_label = summary.get("alerts_severity_label") or "🟢 잠잠"
+        _alert_by_card = summary.get("alerts_fire_by_card") or {}
+        _card_short = {
+            "변동성_폭발": "VIX 폭발", "급락": "SPX 급락",
+            "신용_급격_확장": "HY 확장", "단기_역전": "단기 역전",
+            "변동성_클러스터": "변동성 클러스터",
+        }
+        _fired = [(_card_short.get(k, k), v) for k, v in _alert_by_card.items() if v > 0]
+        _fired.sort(key=lambda x: -x[1])
+        _n_fired = len(_fired)
+        if _alert_sev_key == "warn":
+            _names = _fired[0][0] if _fired else "?"
+            _line = f"단기 경보 {_alert_sev_label} — {_names}"
+        elif _alert_sev_key == "alert":
+            _names = ", ".join(n for n, _ in _fired[:3])
+            _line = f"단기 경보 {_alert_sev_label} — {_names}"
+        else:
+            _line = f"단기 경보 {_alert_sev_label} — {_n_fired}종 fire"
+        st.caption(_line)
 
     # 섹션 3: 역사적 유사국면 (월 평균 매칭률)
     era_dist = summary.get("top1_era_distribution") or {}
@@ -4830,7 +5223,7 @@ def _render_query_result(result):
         st.caption(f"🎯 월 내내 동일 era 유지: **{_lbl}** ({_seg['n_days']}일)")
 
 
-_QUERY_SCHEMA_VERSION = "v7-2026-04-26-helper-datebased"  # bump 시 캐시 강제 무효
+_QUERY_SCHEMA_VERSION = "v13-2026-04-27-mirror-36box-alerts"  # bump 시 캐시 강제 무효
 
 
 @st.cache_data(ttl=3600, show_spinner="월 전체 영업일 평가 중...")
@@ -5915,6 +6308,19 @@ def main():
         # 4차: trailing PE 폴백 (표시용만. 스코어에선 null 처리)
         fpe = tpe; vd["forward_pe"] = fpe; _fpe_is_copy = True
         vd["source"] = vd.get("source", "없음") + " + TrailingPE폴백"
+    # STEP 5-8 자동 누적: 1~3차 폴백으로 산출된 fpe 만 historical_loader 에 적재 (4차 제외)
+    if fpe is not None and not _fpe_is_copy:
+        try:
+            from historical_loader import append_forward_pe_entry
+            _src_label = vd.get("source", "auto")
+            append_forward_pe_entry(
+                date_str=datetime.now().strftime("%Y-%m-%d"),
+                fpe=fpe,
+                source=_src_label,
+                feps=spy_info.get("forwardEps") if spy_info else None,
+                spx=L(spx_s) if spx_s is not None else None,
+            )
+        except Exception: pass
     # 밸류에이션 카드 출처 노출용 문자열.
     # - _val_src_fwd: Forward PE 전용. 폴백 체인(multpl.com + Top10가중 등) 전부 포함.
     # - _val_src_base: trailing_pe/cape/div_yield 전용. Forward 체인 꼬리는 제거한 원본 소스.
