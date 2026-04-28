@@ -4623,13 +4623,15 @@ def _derive_season_from_boxes(box_states):
     # 정의서 우선순위 (겨울 가장 보수, 봄 가장 후순) — 동점 시 보수적 선택
     _priority = {"겨울": 0, "가을": 1, "여름": 2, "봄": 3}
     best = sorted(fire.keys(), key=lambda s: (-ratios[s], -fire[s], _priority[s]))[0]
-    # V3.8 접두사: 인접 계절 fire ≥ 4
+    # 인접 계절 fire ≥ 4 → prefix. _v8_prefix 와 동일 룰:
+    #   nxt 우세 (앞으로 진행) → "늦" / prv 우세 (뒤에서 옴) → "초"
+    # 이전 버전은 swap 됐었음 — 수정.
     _cycle = ["봄", "여름", "가을", "겨울"]
     _bi = _cycle.index(best)
     _nxt = _cycle[(_bi + 1) % 4]; _prv = _cycle[(_bi - 1) % 4]
     label = best
-    if fire.get(_prv, 0) >= 4: label = "늦" + best
-    elif fire.get(_nxt, 0) >= 4: label = "초" + best
+    if fire.get(_nxt, 0) >= 4: label = "늦" + best
+    elif fire.get(_prv, 0) >= 4: label = "초" + best
     return label, fire
 
 
@@ -5241,14 +5243,25 @@ def _render_query_result(result):
         st.caption(f"🎯 월 내내 동일 era 유지: **{_lbl}** ({_seg['n_days']}일)")
 
 
-_QUERY_SCHEMA_VERSION = "v13-2026-04-27-mirror-36box-alerts"  # bump 시 캐시 강제 무효
+_QUERY_SCHEMA_VERSION = "v14-2026-04-29-mraw-prefix-fix"  # bump 시 캐시 강제 무효
 
 
 @st.cache_data(ttl=3600, show_spinner="월 전체 영업일 평가 중...")
 def _query_macro_month_cached_v6(year, month, api_key, _obs_mtime, _schema_ver):
     """월별 결과 1시간 캐시. _schema_ver 는 explicit 인자 (default 사용 X) 로
-    Streamlit cache key 에 확실하게 포함시킴. 함수명도 v6 로 박아 옛 캐시 우회."""
-    raw_data = _build_long_range_raw(api_key)
+    Streamlit cache key 에 확실하게 포함시킴. 함수명도 v6 로 박아 옛 캐시 우회.
+    raw_data 는 V651.M.raw_data (라이브와 동일 소스) 사용 — 외부 시리즈 (cape/hy/fpe) 풀 적재.
+    long_range raw 는 cape/hy/fpe 가 None setdefault 라 V8 박스 점등 약화. 통일 후 라이브 일치."""
+    _v651_init()
+    if V651.M.raw_data is None:
+        try:
+            cached = _load_pickled_raw_if_fresh()
+            if cached is not None: V651.M.raw_data = cached
+            else:
+                V651.M.build_raw_data(verbose=False)
+                _save_pickled_raw(V651.M.raw_data)
+        except Exception: pass
+    raw_data = V651.M.raw_data if V651.M.raw_data is not None else _build_long_range_raw(api_key)
     return _query_macro_at_month(year, month, raw_data, str(OBS_JSONL))
 
 
