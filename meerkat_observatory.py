@@ -5104,7 +5104,12 @@ def _render_query_result(result):
     valid_n = sum(dist.values())
     pct_dom = (dist.get(dominant, 0) / valid_n * 100) if (dominant and valid_n) else 0
     if dominant:
-        st.markdown(f"**대표 계절: {_season_emoji(dominant)} {dominant} ({pct_dom:.0f}%)**")
+        # V8 prefix (초/늦) — 월 평균 점수(means) 를 v8_scores 로 사용. 인접 계절 비율 ≥ 33% 시 부착.
+        _means_for_prefix = summary.get("season_scores_mean") or {}
+        try: _q_prefix = _v8_prefix(dominant, _means_for_prefix)
+        except Exception: _q_prefix = ""
+        _q_label = _q_prefix + dominant
+        st.markdown(f"**대표 계절: {_season_emoji(dominant)} {_q_label} ({pct_dom:.0f}%)**")
     if dist:
         _dist_str = " / ".join(f"{_season_emoji(k)} {k} {v}일" for k, v in sorted(dist.items(), key=lambda x: -x[1]))
         st.caption(f"분포: {_dist_str}")
