@@ -41,7 +41,71 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings("ignore")
 
-VERSION = "3.12.1"
+# ═══ V8.0 1층 (40박스) + 2층 (ANFCI + CAPE_pct) — 2026-04-29 머지 ═══
+import season_engine_v69 as V651
+import season_engine_v8 as V8L1
+import season_engine_vulnerability as V8L2
+
+# V8 박스 ID → 한국어 라벨 (auto_season checks dict + _SEASON_BOX_HELP 키와 1:1 일치)
+V8_BOX_LABELS = {
+    # 봄 11
+    "S_B1": "채권: 역전이 풀리는 중인데 고용도 살아난다",
+    "S_B2": "연준: 저점에서 인하한다",
+    "S_B3": "달러: 빠르게 떨어진다",
+    "S_B4": "야드커브: 빠르게 개선 중이다",
+    "S_C1": "신용: 공포가 물러나는 중이다",
+    "S_C2": "공포: 극단을 찍고 진정됐다",
+    "S_R1": "실업률: 4%를 넘었거나 급등했다",
+    "S_R2": "바닥: 고점에서 20% 이상 빠졌다",
+    "S_R4": "실적: 나쁘지만 바닥은 지났다",
+    "S_V1": "밸류: 거품이 다 빠졌다",
+    "S_V2": "반도체: 가장 먼저 저점을 본다",
+    # 여름 9
+    "U_B1": "채권: 형이 안심하고 있다",
+    "U_B2": "연준: 건드리지 않고 있다",
+    "U_C1": "신용: 아무도 걱정하지 않는다",
+    "U_C2": "공포: 없다",
+    "U_R1": "고용: 견고하다",
+    "U_R2": "시장 폭: 전 업종 동반 강세",
+    "U_R4": "실적: 좋고 더 좋아지고 있다",
+    "U_V1": "밸류: 정당화 가능하다",
+    "U_V2": "반도체: 시장을 끌고 간다",
+    # 가을 11
+    "A_B1": "채권: 역전이 시작됐거나 깊어지고 있다",
+    "A_B2": "연준: 고점에서 내리거나 올리고 있다",
+    "A_B3": "달러: 비정상이다",
+    "A_B4": "야드커브: 빠르게 악화 중이다",
+    "A_C1": "신용: 슬슬 벌어진다",
+    "A_C2": "경기활동: 둔화 중이다",
+    "A_R1": "반도체: 먼저 꺾였다",
+    "A_R2": "시장 폭: 메가캡만 끌고 간다",
+    "A_R4": "실적: 좋지만 느려지고 있다",
+    "A_V1": "밸류: 어떤 잣대로 봐도 비싸다",
+    "A_V2": "CAPE: 역사가 말한다",
+    # 겨울 9
+    "W_B1": "채권: 역전이 풀리는데 경제가 무너진다",
+    "W_B2": "연준: 급하게 내리고 있다",
+    "W_C1": "신용: 이미 깨졌다",
+    "W_C2": "공포: 한 달 내내 지속된다",
+    "W_R1": "실업률: 빠르게 오르고 있다",
+    "W_R2": "하락: 멈췄지만 바닥이다",
+    "W_R4": "실적: 확실히 무너졌다",
+    "W_V1": "달러: 시스템이 위험하다",
+    "W_V2": "추세: 200일선 아래 두 달째",
+}
+
+V8_SEASON_BOXES = {
+    "봄":   ["S_B1", "S_B2", "S_B3", "S_B4", "S_C1", "S_C2",
+             "S_R1", "S_R2", "S_R4", "S_V1", "S_V2"],
+    "여름": ["U_B1", "U_B2", "U_C1", "U_C2",
+             "U_R1", "U_R2", "U_R4", "U_V1", "U_V2"],
+    "가을": ["A_B1", "A_B2", "A_B3", "A_B4", "A_C1", "A_C2",
+             "A_R1", "A_R2", "A_R4", "A_V1", "A_V2"],
+    "겨울": ["W_B1", "W_B2", "W_C1", "W_C2",
+             "W_R1", "W_R2", "W_R4", "W_V1", "W_V2"],
+}
+
+VERSION = "8.0"
 # 3.6 변경점: 거시 스코어 공식 개편 (3M-10Y 스프레드 tm 신규 추가, t 가중치 10→7)
 #            + F5 가속도 모니터 윈도우 3M/6M → 1M/3M + threshold 차별화/clip
 # 공식이 바뀌었으므로 3.5 히스토리와 시계열을 한 줄에 섞으면 Δ/ΔΔ 계산이 오염된다.
@@ -50,6 +114,139 @@ VERSION_STARTED = "2026-04-23"  # 3.6 적용 시작일 (적응기 배지 계산 
 SD = Path.home() / ".meerkat"
 SF = SD / "state.json"; CF = SD / "config.json"; OD = SD / "observations"
 BKD = SD / "backups"  # 일 1회 자동 백업 폴더 (14일 유지)
+
+# ═══ V8.0 raw_data 디스크 캐시 (TTL 24h) + 히스테리시스 + prefix ═══
+_V69_CACHE_KEY = "v8.0.0"
+_RAW_PICKLE = SD / "cache" / "raw_data_v8.pickle"
+_RAW_PICKLE_TTL_HOURS = 24
+_HYSTERESIS_MARGIN = 1.5
+_V8_PREFIX_RATIO = 0.33
+
+
+def _load_pickled_raw_if_fresh():
+    import time, pickle
+    if not _RAW_PICKLE.exists(): return None
+    try:
+        age_hours = (time.time() - _RAW_PICKLE.stat().st_mtime) / 3600
+        if age_hours > _RAW_PICKLE_TTL_HOURS: return None
+        with open(_RAW_PICKLE, "rb") as f:
+            return pickle.load(f)
+    except Exception:
+        return None
+
+
+def _save_pickled_raw(raw_data):
+    import pickle
+    try:
+        _RAW_PICKLE.parent.mkdir(parents=True, exist_ok=True)
+        with open(_RAW_PICKLE, "wb") as f:
+            pickle.dump(raw_data, f)
+    except Exception:
+        pass
+
+
+@st.cache_resource(show_spinner="V8.0 데이터 로딩 중 (FRED + yfinance + historical) ...")
+def _v651_init(_cache_key=_V69_CACHE_KEY):
+    """raw_data 디스크 캐시 (TTL 24h) + V8 1층 임계 적용."""
+    cached = _load_pickled_raw_if_fresh()
+    if cached is not None:
+        V651.M.raw_data = cached
+    else:
+        V651.M.build_raw_data(verbose=False)
+        _save_pickled_raw(V651.M.raw_data)
+    V8L1.GS_S_V1 = 22
+    return True
+
+
+def _v8_prefix(season, v8_scores):
+    """V8 분모별 prefix (초/늦) — 인접 계절 비율 ≥ 33% 시 부착."""
+    cycle = ["봄", "여름", "가을", "겨울"]
+    if season not in cycle: return ""
+    bi = cycle.index(season)
+    nxt = cycle[(bi + 1) % 4]; prv = cycle[(bi - 1) % 4]
+    nxt_total = len(V8_SEASON_BOXES.get(nxt, []))
+    prv_total = len(V8_SEASON_BOXES.get(prv, []))
+    if nxt_total == 0 or prv_total == 0: return ""
+    nxt_ratio = v8_scores.get(nxt, 0) / nxt_total
+    prv_ratio = v8_scores.get(prv, 0) / prv_total
+    if nxt_ratio >= _V8_PREFIX_RATIO: return "늦"
+    if prv_ratio >= _V8_PREFIX_RATIO: return "초"
+    return ""
+
+
+def _v8_eval_at(offset):
+    _v8_eval = V8L1.evaluate_v8_layer1(V651.M.raw_data, offset)
+    _boxes = _v8_eval.get("boxes", {})
+    _scores = {
+        _sn: sum(1 for _bid in V8_SEASON_BOXES[_sn] if _boxes.get(_bid) is True)
+        for _sn in ("봄", "여름", "가을", "겨울")
+    }
+    _SO = ["봄", "여름", "가을", "겨울"]
+    _max = max(_scores.values())
+    _best = next(s for s in reversed(_SO) if _scores[s] == _max)
+    return _best, _scores, _boxes
+
+
+def evaluate_v651_today(offset=0, hysteresis=True, hysteresis_margin=None):
+    """V8.0 1층 (40박스) + 2층 (ANFCI + CAPE_pct) 평가 + 히스테리시스."""
+    if hysteresis_margin is None:
+        hysteresis_margin = _HYSTERESIS_MARGIN
+    _v651_init()
+    # 자가 복구: cache_resource 가 실패 결과 캐시한 경우 V651.M.raw_data 가 None
+    if V651.M.raw_data is None:
+        try:
+            cached = _load_pickled_raw_if_fresh()
+            if cached is not None:
+                V651.M.raw_data = cached
+            else:
+                V651.M.build_raw_data(verbose=False)
+                _save_pickled_raw(V651.M.raw_data)
+        except Exception as _e:
+            print(f"[V8 self-recover FAIL] {type(_e).__name__}: {_e}")
+            return None
+    try:
+        raw_best, _v8_scores, _v8_boxes = _v8_eval_at(offset)
+    except Exception as _e:
+        import traceback
+        print(f"[V8 evaluate FAIL offset={offset}] {type(_e).__name__}: {_e}")
+        traceback.print_exc()
+        return None
+    season = raw_best
+    hyst_held = False
+    if hysteresis and offset == 0:
+        try:
+            yest_best, yest_scores, _ = _v8_eval_at(offset + 1)
+            if raw_best != yest_best:
+                margin = _v8_scores[raw_best] - _v8_scores[yest_best]
+                if margin < hysteresis_margin:
+                    season = yest_best
+                    hyst_held = True
+        except Exception:
+            pass
+    try:
+        _v8_layer2 = V8L2.compute_layer2(V651.M.raw_data, offset)
+    except Exception:
+        _v8_layer2 = {}
+    prefix = _v8_prefix(season, _v8_scores)
+    # V8 confidence — best ≤ 4 → "판정 불가" (명세) / 그 외 비율 기반
+    _top_total = len(V8_SEASON_BOXES.get(season, [])) or 1
+    _abs_b = _v8_scores.get(season, 0)
+    _ratio = _abs_b / _top_total
+    if   _abs_b <= 4:    conf = "판정 불가"
+    elif _ratio >= 0.6:  conf = "매우 높음"
+    elif _ratio >= 0.45: conf = "높음"
+    elif _ratio >= 0.3:  conf = "보통"
+    else:                conf = "낮음"
+    return {
+        "base": season, "prefix": prefix, "label": prefix + season,
+        "confidence": conf,
+        "raw_season": raw_best,
+        "hysteresis_held": hyst_held,
+        "v8_boxes": _v8_boxes,
+        "v8_scores": _v8_scores,
+        "v8_layer2": _v8_layer2,
+    }
+
 
 # ═══ 자동 백업 ═══
 # 앱 실행 시 하루 1회 핵심 파일을 ~/.meerkat/backups/YYYY-MM-DD/ 에 복사.
@@ -1048,9 +1245,30 @@ def fest_fwd_pe():
 
 def auto_season(fd, yd, ff, unemp, fpe, tpe, cape, wti, spy_info,
                 fpe_z=None, fpe_3m_chg=None):
-    """4계절 × 9박스 = 36개 항목 자동 판정. 공통 5 + 고유 4 구조.
-    봄 정의 (V3.8.1): 거시식 보수 강화 — 실업률 4%+, DD -25%+,
-    인플레 명시적 종결 등 다중 확인 요구."""
+    """V8.0 1층 40박스 + 히스테리시스 + 2층 (ANFCI/CAPE) 평가.
+    evaluate_v651_today() 호출 — 대시보드/계절판단 탭 일치 보장.
+    """
+    res = evaluate_v651_today(offset=0)
+    if res is None:
+        return "—", "판정 불가", {"봄":[],"여름":[],"가을":[],"겨울":[]}, {"봄":0,"여름":0,"가을":0,"겨울":0}
+    best_label = res["label"]
+    v8_boxes = res.get("v8_boxes", {})
+    v8_scores = res.get("v8_scores", {})
+    checks = {}
+    for season in ("봄", "여름", "가을", "겨울"):
+        items = []
+        for box_id in V8_SEASON_BOXES[season]:
+            v = v8_boxes.get(box_id)
+            items.append((V8_BOX_LABELS[box_id], v is True))
+        checks[season] = items
+    scores = {s: float(v8_scores.get(s, 0)) for s in ("봄", "여름", "가을", "겨울")}
+    conf = res.get("confidence", "보통")
+    return best_label, conf, checks, scores
+
+
+def _legacy_auto_season_v3_UNREACHABLE(fd, yd, ff, unemp, fpe, tpe, cape, wti, spy_info,
+                fpe_z=None, fpe_3m_chg=None):
+    """[unreachable] V3.12.1 36박스 평가 — V8 머지 후 폐기. 본문은 호출 안 됨."""
     from datetime import timedelta as td
     def _ago(s, days):
         """시계열에서 N일 전 값. 월간/일간 데이터 모두 대응."""
@@ -4660,236 +4878,25 @@ def _inv_state_at_offset(s, offset, lookback=252):
 
 
 def _diagnose_9boxes_at_offset(raw, offset):
-    """V3.12.1: 시점 가변 4 × 9 = 36 박스. 라벨은 _SEASON_BOX_HELP / auto_season 과
-    1:1 일치. fpe/tpe/cape/spy_info 의존 박스는 raw 부족 시 False (⬜) 로 폴백."""
-    qqq = raw.get("qqq_s"); ff = raw.get("ff_s"); hy = raw.get("hy_s")
-    unrate = raw.get("unrate_s"); cpi = raw.get("cpi_yoy_s")
-    fpe = raw.get("fpe_s"); cape = raw.get("cape_s")
-    sox = raw.get("sox_s"); spx = raw.get("spx_s"); rsp = raw.get("rsp_s"); spy = raw.get("spy_s")
-    wti = raw.get("wti_s"); vix = raw.get("vix_s"); umich = raw.get("umich_s")
-    drccl = raw.get("drccl_s"); payems = raw.get("payems_s")
-    inv3m10y = raw.get("t10y3m_s")
-    # ── inversion 상태 ──
-    _inv = _inv_state_at_offset(inv3m10y, offset)
-    # ── HY ──
-    hy_now_raw = _safe_iloc_at(hy, offset)
-    hy_pct = (hy_now_raw * 100) if (hy_now_raw is not None and hy_now_raw <= 1.0) else hy_now_raw
-    hy_6m = _abs_change_at(hy, offset, 180)
-    # peak drop: 최근 252일 peak 대비 4% 이하 진입했는지 (date-based)
-    hy_peak_drop = False
+    """V8.0 머지 — 시점 가변 V8 1층 40박스 평가. 라벨은 V8_BOX_LABELS 와 1:1.
+    UI 호환: checks dict {계절: [(label, bool), ...]} 형식 반환.
+    """
     try:
-        _hy_t = _trim_series_at_offset(hy, offset)
-        if _hy_t is not None and len(_hy_t) >= 252:
-            _w = _hy_t.iloc[-252:]
-            _peak = float(_w.max())
-            _peak_pct = _peak * 100 if _peak <= 1.0 else _peak
-            if _peak_pct >= 5.0 and hy_pct is not None and hy_pct < 4.0:
-                hy_peak_drop = True
-    except Exception: pass
-    # ── FF ──
-    ff_now = _safe_iloc_at(ff, offset)
-    ff_6m_chg = _abs_change_at(ff, offset, 180)
-    ff_3m_chg = _abs_change_at(ff, offset, 90)
-    ff_pos_pct = _percentile_at(ff, offset, 252 * 10)
-    if ff_pos_pct is None: ff_pos_pct = _percentile_at(ff, offset, 252 * 5)
-    if ff_pos_pct is None: ff_pos_pct = _percentile_at(ff, offset, 252 * 3)
-    ff_low_zone = (ff_pos_pct is not None and ff_pos_pct < 30)
-    ff_high_zone = (ff_pos_pct is not None and ff_pos_pct >= 70)
-    spring_cut = (ff_3m_chg is not None and ff_3m_chg < 0) and ff_low_zone
-    autumn_cut = (ff_3m_chg is not None and ff_3m_chg < 0) and ff_high_zone
-    # ── 실업 ──
-    un_now = _safe_iloc_at(unrate, offset)
-    un_3m = _abs_change_at(unrate, offset, 90)
-    # ── PAYEMS 월간 변화 (date-based trim 후 마지막 2 entry 차이) ──
-    payems_chg = None
-    try:
-        _p_t = _trim_series_at_offset(payems, offset)
-        if _p_t is not None:
-            _p = _p_t.dropna()
-            if len(_p) >= 2:
-                payems_chg = float(_p.iloc[-1]) - float(_p.iloc[-2])
-    except Exception: pass
-    # ── QQQ DD 52w (date-based) ──
-    qqq_dd = None
-    try:
-        _qqq_t = _trim_series_at_offset(qqq, offset)
-        if _qqq_t is not None and len(_qqq_t) >= 252:
-            _w = _qqq_t.iloc[-252:]
-            cur = float(_qqq_t.iloc[-1]); high = float(_w.max())
-            if high > 0: qqq_dd = (cur / high - 1) * 100
-    except Exception: pass
-    qqq_dd_deep_neg25 = (qqq_dd is not None and qqq_dd < -25)
-    qqq_dd_deep_neg20 = (qqq_dd is not None and qqq_dd < -20)
-    qqq_dd_deep_neg15 = (qqq_dd is not None and qqq_dd < -15)
-    # ── CPI ──
-    cpi_now = _safe_iloc_at(cpi, offset)
-    cpi_3m_chg = _abs_change_at(cpi, offset, 90) if cpi is not None else None
-    cpi_yoy_below_3 = (cpi_now is not None and cpi_now < 3)
-    # ── 변동률 ──
-    sox_3m = _pct_change_at(sox, offset, 63); spx_3m = _pct_change_at(spx, offset, 63)
-    sox_6m = _pct_change_at(sox, offset, 126); spx_6m = _pct_change_at(spx, offset, 126)
-    sox_1m = _pct_change_at(sox, offset, 22); spx_1m = _pct_change_at(spx, offset, 22)
-    rsp_6m = _pct_change_at(rsp, offset, 126); qqq_6m = _pct_change_at(qqq, offset, 126)
-    spy_1m = _pct_change_at(spy, offset, 22); rsp_1m = _pct_change_at(rsp, offset, 22)
-    wti_3m = _pct_change_at(wti, offset, 63)
-    # ── VIX (date-based 90D max) ──
-    vix_now = _safe_iloc_at(vix, offset)
-    vix_90max = None
-    try:
-        _vix_t = _trim_series_at_offset(vix, offset)
-        if _vix_t is not None and len(_vix_t) >= 30:
-            if hasattr(_vix_t, "index") and isinstance(_vix_t.index, pd.DatetimeIndex):
-                _ref = _vix_t.index[-1]
-                _w = _vix_t[(_vix_t.index >= _ref - pd.Timedelta(days=90)) & (_vix_t.index <= _ref)]
-            else:
-                _w = _vix_t.iloc[-90:]
-            if len(_w) > 0: vix_90max = float(_w.max())
-    except Exception: pass
-    # ── fpe / cape ──
-    fpe_now = _safe_iloc_at(fpe, offset)
-    cape_now = _safe_iloc_at(cape, offset)
-    # ── 소비 ──
-    umich_now = _safe_iloc_at(umich, offset)
-    drccl_now = _safe_iloc_at(drccl, offset)
-    consumer_ok = ((umich_now is not None and umich_now > 70)
-                   or (drccl_now is not None and drccl_now < 4))
-    # ── 매크로 동시 트리거 (실업/공포/조정 중 2개+) ──
-    spring_multi = 0
-    if un_now is not None and un_now >= 4: spring_multi += 1
-    if vix_90max is not None and vix_90max >= 35 and vix_now is not None and vix_now < 30: spring_multi += 1
-    if qqq_dd is not None and qqq_dd < -25: spring_multi += 1
-    # ── 신용 디커플링 (가을): HY 6M↑ + VIX 낮음 ──
-    hy_decoup = bool(hy_6m is not None and hy_6m > 0
-                     and vix_now is not None and vix_now < 20
-                     and hy_pct is not None and hy_pct > 3.5)
-    # ── WTI 충격 (가을): WTI 3M > 15 AND SPX 3M < 0 ──
-    wti_shock = bool(wti_3m is not None and spx_3m is not None and wti_3m > 15 and spx_3m < 0)
-    # ── earnings — spy_info / fpe history 미적재 → 영구 평가 불가 (None) ──
-    earnings_evaluable = False  # long_range_raw 에 spy_info historical 없음
-    # ── 평가 가능성 플래그 ──
-    hy_eval = (hy is not None and len(hy) > 0 and hy_pct is not None)
-    hy_peak_eval = (hy is not None and len(hy) > offset + 252)
-    qqq_dd_eval = (qqq_dd is not None)
-    consumer_eval = (umich_now is not None or drccl_now is not None)
-    fpe_eval = (fpe_now is not None)
-    cape_eval = (cape_now is not None)
-    val_or_eval = (fpe_eval or cape_eval)  # fpe OR cape
-    # ── STEP 5-8 trailing fallback raw — fpe 부재 시 te/eg 사용 ──
-    te_now = _safe_iloc_at(raw.get("te_s"), offset)
-    eg_now = _safe_iloc_at(raw.get("eg_s"), offset)
-    te_3m_chg = _abs_change_at(raw.get("te_s"), offset, 90)
-    spring_multi_eval = (un_now is not None and vix_90max is not None and qqq_dd is not None)
+        v8_res = V8L1.evaluate_v8_layer1(raw, offset)
+        boxes = v8_res.get("boxes", {})
+    except Exception as _e:
+        print(f"[V8 box diag fail offset={offset}] {type(_e).__name__}: {_e}")
+        return {}
+    out = {}
+    for season in ("봄", "여름", "가을", "겨울"):
+        items = []
+        for box_id in V8_SEASON_BOXES[season]:
+            label = V8_BOX_LABELS.get(box_id, box_id)
+            val = boxes.get(box_id)
+            items.append((label, val is True))
+        out[season] = items
+    return out
 
-    def _v(value, *deps):
-        if any(d is None for d in deps): return None
-        return bool(value)
-
-    # ── STEP 5-8 fundamental 박스 trailing fallback ──
-    if fpe_now is not None or cape_now is not None:
-        spring5_val = bool((fpe_now is not None and fpe_now <= 18)
-                            or (cape_now is not None and cape_now <= 25))
-    elif te_now is not None and eg_now is not None:
-        spring5_val = bool(te_now <= 23 and eg_now < 0)
-    else:
-        spring5_val = None
-    summer5_val = None if fpe_now is None else bool(fpe_now < 22)
-    if fpe_now is not None or cape_now is not None:
-        autumn5_val = bool((fpe_now is not None and fpe_now >= 22)
-                            or (cape_now is not None and cape_now >= 35))
-    else:
-        autumn5_val = None
-    autumn9_val = None if not cape_eval else bool(cape_now >= 35)
-    if earnings_evaluable:
-        winter5_val = False
-    elif te_3m_chg is not None and eg_now is not None:
-        winter5_val = bool(te_3m_chg > 0 and eg_now < 0)
-    else:
-        winter5_val = None
-
-    # ── 9박스 정의 (auto_season label 1:1, None = 평가 불가) ──
-    spring = [
-        ("채권: 역전 정상화 진행 중", _v(_inv == "recovering", _inv)),
-        ("신용: HY 정점 후 4% 진입",
-            None if not hy_peak_eval else _v(hy_peak_drop, hy_pct)),
-        ("연준: 저점권 인하 진행",
-            _v(spring_cut, ff_3m_chg, ff_pos_pct)),
-        ("실적: 나쁘다 (역실적)",
-            None if not earnings_evaluable else False),
-        ("밸류: 재평가 완료", spring5_val),
-        ("실업률 4% 돌파 또는 0.5%p 진입",
-            None if (un_now is None and un_3m is None) else
-            bool((un_now is not None and un_now >= 4) or (un_3m is not None and un_3m > 0.5))),
-        ("바닥권 도달 (DD < -25%)",
-            None if not qqq_dd_eval else bool(qqq_dd < -25)),
-        ("인플레 명시적 종결",
-            _v(cpi_3m_chg is not None and cpi_3m_chg < 0 and cpi_yoy_below_3, cpi_3m_chg, cpi_now)),
-        ("매크로 동시 트리거 (실업/공포/조정 중 2개+)",
-            None if not spring_multi_eval else bool(spring_multi >= 2)),
-    ]
-    summer = [
-        ("채권: 3M10Y 정상", _v(_inv == "normal", _inv)),
-        ("신용: HY < 4%", _v(hy_pct is not None and hy_pct < 4, hy_pct)),
-        ("연준: 안정 유지", _v(ff_6m_chg is not None and abs(ff_6m_chg) < 0.5, ff_6m_chg)),
-        ("실적: 좋고 가속",
-            None if not earnings_evaluable else False),
-        ("밸류: 정당화 가능", summer5_val),
-        ("고용 강세",
-            _v(un_3m is not None and un_3m <= 0
-               and payems_chg is not None and payems_chg > 150,
-               un_3m, payems_chg)),
-        ("소비 버팀",
-            None if not consumer_eval else bool(consumer_ok)),
-        ("반도체 동행",
-            _v(sox_6m is not None and spx_6m is not None and sox_6m > spx_6m, sox_6m, spx_6m)),
-        ("시장 폭 건강",
-            _v(rsp_6m is not None and qqq_6m is not None and rsp_6m > 0 and qqq_6m > 0,
-               rsp_6m, qqq_6m)),
-    ]
-    autumn = [
-        ("채권: 3M10Y 역전 진입/심화",
-            _v(_inv in ("entering", "deepening", "deep_stable"), _inv)),
-        ("신용: HY 6M 변화 > 0", _v(hy_6m is not None and hy_6m > 0, hy_6m)),
-        ("연준: 고점 인하/긴축",
-            _v(autumn_cut or (ff_6m_chg is not None and ff_6m_chg > 0),
-               ff_6m_chg, ff_pos_pct)),
-        ("실적: 아직 좋다",
-            None if not earnings_evaluable else False),
-        ("밸류: 극단 (OR)", autumn5_val),
-        ("신용 디커플링",
-            _v(hy_decoup, hy_6m, vix_now, hy_pct)),
-        ("인플레 디커플링 (WTI 충격)",
-            _v(wti_shock, wti_3m, spx_3m)),
-        ("반도체 선행 약세",
-            _v(sox_3m is not None and spx_3m is not None and spx_6m is not None
-               and sox_3m < spx_3m and spx_6m > 0, sox_3m, spx_3m, spx_6m)),
-        ("PER 역사적 극단", autumn9_val),
-    ]
-    winter = [
-        ("채권: 역전 정상화 진행", _v(_inv == "recovering", _inv)),
-        ("신용: HY > 5% (벌어진 상태)", _v(hy_pct is not None and hy_pct > 5, hy_pct)),
-        ("연준: 진짜 인하 진행 중", _v(ff_3m_chg is not None and ff_3m_chg < 0, ff_3m_chg)),
-        ("실적: 2분기 연속 감소",
-            None if not earnings_evaluable else False),
-        ("밸류: PER 튐 (주가<실적)", winter5_val),
-        ("하락 둔화 (DD<-20% & 1M ±3%)",
-            _v(qqq_dd_deep_neg20 and spx_1m is not None and abs(spx_1m) < 3, qqq_dd, spx_1m)),
-        ("실업률 폭증", _v(un_3m is not None and un_3m > 0.5, un_3m)),
-        ("메가캡 의존 (RSP 약세)",
-            _v(spy_1m is not None and rsp_1m is not None and spy_1m > 0 and rsp_1m < 0,
-               spy_1m, rsp_1m)),
-        ("반도체 선행 바닥 신호",
-            _v(sox_1m is not None and spx_1m is not None and sox_1m > spx_1m
-               and qqq_dd_deep_neg15, sox_1m, spx_1m, qqq_dd)),
-    ]
-    def _norm(v):
-        if v is None: return None
-        return bool(v)
-    return {
-        "봄": [(_l, _norm(_b)) for _l, _b in spring],
-        "여름": [(_l, _norm(_b)) for _l, _b in summer],
-        "가을": [(_l, _norm(_b)) for _l, _b in autumn],
-        "겨울": [(_l, _norm(_b)) for _l, _b in winter],
-    }
 
 
 def _diagnose_box_booleans(raw, offset):
@@ -5806,86 +5813,174 @@ HELP_TAB4 = """시장에도 사계절이 있다.
 HELP_TAB5 = """한 달에 한 번 기록한다. 지금이 무슨 계절이고 왜 그런지 3줄 적는다.
 데이터는 자동으로 붙는다. 나중에 돌아보면 내가 뭘 보고 있었는지 알 수 있다."""
 
-# ═══ V3.8.1 4계절 9박스 평가 기준 (TAB 4 툴팁) ═══
+# ═══ V8.0 40박스 툴팁 (2026-04-29 머지) ═══
 # 키: (계절, 박스 라벨). 라벨은 auto_season() checks dict 와 1:1 일치해야 함.
-# 라벨 변경 시 이 dict 도 함께 갱신할 것.
+# V8_BOX_LABELS 와 동일.
 _SEASON_BOX_HELP = {
-    # ── 봄 ──
-    ("봄", "채권: 역전 정상화 진행 중"):
-        "3개월물과 10년물 역전이 풀리는 중. 가장 깊었던 시점 대비 절반 이상 회복.\n역전이 완전히 풀리면 그건 여름. 풀리는 중간 단계가 봄이다.",
-    ("봄", "신용: HY 정점 후 4% 진입"):
-        "하이일드 스프레드가 정점 찍고 4% 아래로 내려옴.\n회사가 망할 수 있다는 공포가 물러나는 중. 봄의 전제다.",
-    ("봄", "연준: 저점권 인하 진행"):
-        "기준금리가 지난 10년 중 하위 30% 이내인데 그 자리에서 또 인하.\n고점에서의 인하는 가을이다. 저점에서의 인하만 봄으로 친다.",
-    ("봄", "실적: 나쁘다 (역실적)"):
-        "기업 실적이 빠지고 있다. 작년보다 못하다.\n역실적장세에선 매수가 정석이다.",
-    ("봄", "밸류: 재평가 완료"):
-        "선행 PER 18 이하 또는 CAPE 25 이하.\n거품이 다 빠졌다는 뜻이다. 위에서 내려온 자리. 둘 중 하나만 충족해도 봄.",
-    ("봄", "실업률 4% 돌파 또는 0.5%p 진입"):
-        "실업률이 4%를 넘었거나 최근 3개월간 0.5%p 이상 올랐다.\n실업률 올라갈 때부터 주식을 사기 시작하면 된다. 그 출발 신호다.",
-    ("봄", "바닥권 도달 (DD < -25%)"):
-        "QQQ가 52주 고점에서 25% 이상 빠진 상태.\n두려움이 정점일 때 사라. 깊은 조정 없이는 진짜 바닥 아니다.",
-    ("봄", "인플레 명시적 종결"):
-        "CPI 추세 하향 + 절대 수치 3% 미만.\n인플레가 잡혔다. 파월이 인하할 명분이 생겼다는 뜻이다.",
-    ("봄", "매크로 동시 트리거 (실업/공포/조정 중 2개+)"):
-        "다음 셋 중 둘 이상이 동시 충족: 실업률 4%+ / 빅스 35+ 찍고 진정 / QQQ -25%+ 조정.\n단일 지표로 봄 호출 안 한다. 반드시 다중 확인.",
-    # ── 여름 ──
-    ("여름", "채권: 3M10Y 정상"):
-        "3개월물과 10년물이 정상 (장기가 단기보다 높음). 1년 이내 역전도 없었다.\n채권 형이 안심하고 있는 상태.",
-    ("여름", "신용: HY < 4%"):
-        "하이일드 스프레드 절대값 4% 미만.\n회사가 망할 수 있다는 생각을 안 한다. 위험하다.",
-    ("여름", "연준: 안정 유지"):
-        "기준금리 6개월 변화가 거의 없음 (±0.5%p 이내).\n인상도 인하도 아닌 정체. 시장이 편안한 자리다.",
-    ("여름", "실적: 좋고 가속"):
-        "기업 실적이 좋고, 그 좋은 게 더 빨라지고 있다.\n주가는 위치가 아닌 속도에 반응한다. 속도가 양수면 여름이다.",
-    ("여름", "밸류: 정당화 가능"):
-        "선행 PER이 사이클 평균 이하 또는 22 미만.\n지금 PER 23.2면 22 넘었다. 이 셀 못 켠다. 그게 정직한 출력이다.",
-    ("여름", "고용 강세"):
-        "실업률 안 오르고 신규 일자리 월 15만 이상.\n노동시장이 견고하다. 소비도 따라온다.",
-    ("여름", "소비 버팀"):
-        "소비자신뢰 70 이상 또는 카드 연체율 4% 미만.\n사람들이 돈을 쓴다. GDP의 70%가 소비다.",
-    ("여름", "반도체 동행"):
-        "반도체가 시장보다 6개월 수익률 좋다.\n반도체가 시장을 끌고 갈 때가 진짜 여름이다.",
-    ("여름", "시장 폭 건강"):
-        "동일가중 S&P (RSP) 와 시총가중 QQQ 둘 다 6개월 양수.\n메가캡만 끌고 가는 가짜 강세 아니다. 전 업종 동반 강세.",
-    # ── 가을 ──
-    ("가을", "채권: 3M10Y 역전 진입/심화"):
-        "3개월물과 10년물 역전이 신규 진입했거나 더 깊어지는 중.\n채권 동생이 비명 지르기 시작했다. 가을의 첫 신호다.",
-    ("가을", "신용: HY 6M 변화 > 0"):
-        "하이일드 스프레드가 6개월 전보다 벌어졌다.\n회사가 망할 수 있다는 생각이 슬슬 돌기 시작한다.",
-    ("가을", "연준: 고점 인하/긴축"):
-        "고점권에서의 인하 (위기 대응형) 또는 긴축 진행 중.\n고점에서의 금리인하는 주가 하락을 이끈다. 가을의 본질이다.",
-    ("가을", "실적: 아직 좋다"):
-        "기업 실적이 아직 양호.\n봄과 정반대. 가을은 실적 좋은데 위에서 누르는 자리다.",
-    ("가을", "밸류: 극단 (OR)"):
-        "선행 PER 22+ 또는 후행 PER 28+ 또는 CAPE 35+.\n셋 중 하나만 극단이어도 켜진다. 어떤 잣대로 봐도 비싸다는 뜻.",
-    ("가을", "신용 디커플링"):
-        "신용 스프레드는 벌어지는데 빅스는 20 미만.\n채권시장은 알고 주식시장은 모르는 자리. 채권시장의 붕괴는 세상물정 모르는 나스닥 동생을 보고 느낀 걱정의 결과다.",
-    ("가을", "인플레 디커플링 (WTI 충격)"):
-        "유가 3개월 +15% 이상 + 시장 3개월 음수.\n공급충격이 시장으로 옮긴 단계. 유가→인플레→연준→시장 연쇄.",
-    ("가을", "반도체 선행 약세"):
-        "반도체 3개월 수익률이 시장보다 나쁜데, 시장 6개월은 아직 양수.\n반도체가 먼저 꺾였다. 시장은 아직 모른다. 반도체가 선행한다.",
-    ("가을", "PER 역사적 극단"):
-        "Shiller CAPE 35 이상.\n140년 역사상 이 수준에서 숏 잡아 실패한 적 없다.",
-    # ── 겨울 ──
-    ("겨울", "채권: 역전 정상화 진행"):
-        "역전이 깊었다가 풀리는 중.\n봄과 같은 신호이지만 실적 빠지고 실업률 오를 때 함께 잡히면 겨울로 분류된다.",
-    ("겨울", "신용: HY > 5% (벌어진 상태)"):
-        "하이일드 스프레드 5% 이상.\n신용시장이 이미 깨진 상태. 가을 다음 단계다.",
-    ("겨울", "연준: 진짜 인하 진행 중"):
-        "기준금리 최근 3개월 변화가 음수.\n직전 인하 잔재가 아니라 지금 진행 중인 인하만 잡는다.",
-    ("겨울", "실적: 2분기 연속 감소"):
-        "실적과 매출 둘 다 작년 대비 감소 (1차) / 선행 EPS가 후행보다 15%+ 낮음 (2차).\n단순 한 분기 빠진 것 아니라 추세적 감소. 진짜 역실적장세.",
-    ("겨울", "밸류: PER 튐 (주가<실적)"):
-        "선행 PER 90일 전보다 상승 + 실적 빠지는 중.\n주가가 빠지는데 실적이 더 빠르게 빠져서 PER이 튄다. 닷컴 붕괴 때 PER 50, 60, 70, 80 됐다.",
-    ("겨울", "하락 둔화 (DD<-20% & 1M ±3%)"):
-        "QQQ가 -20% 이상 빠진 상태에서 1개월 변화는 ±3% 이내.\n공포는 있는데 추가 하락은 멈춘 자리. 역실적장세의 매수 자리.",
-    ("겨울", "실업률 폭증"):
-        "실업률 3개월 변화 +0.5%p 이상.\n봄 임계(0.3)보다 강한 조건. 이미 많이 올랐다는 뜻.",
-    ("겨울", "메가캡 의존 (RSP 약세)"):
-        "시총가중 SPY는 1개월 양수인데 동일가중 RSP는 음수.\n거대주만 끌고 가는 가짜 강세. 시장 폭이 무너진 신호다.",
-    ("겨울", "반도체 선행 바닥 신호"):
-        "반도체가 시장보다 1개월 수익률 좋고 + QQQ -15% 이상 조정 + 반도체도 -20% 이상 깊은 조정.\n단순 반도체 강세가 아니라 진짜 조정장 안에서의 반도체 선행. 그 어떤 섹터보다도 반도체가 가장 먼저 저점을 본다.",
+    # ─────────────────── 봄 (11박스) ───────────────────
+    ("봄", "채권: 역전이 풀리는 중인데 고용도 살아난다"):
+        "3개월물과 10년물 역전이 풀리는 중이다. 그런데 실업률도 떨어지고 있다.\n"
+        "같은 정상화라도 실업률이 오르면 겨울이다. 내려가면 봄이다.\n"
+        "봄과 겨울은 채권 신호가 같다. 구분하는 건 고용이다.",
+    ("봄", "연준: 저점에서 인하한다"):
+        "기준금리가 지난 10년 중 하위 30% 이내인데 그 자리에서 또 인하한다.\n"
+        "고점에서의 인하는 가을이다. 저점에서의 인하만 봄으로 친다.\n"
+        "연준이 바닥에서 돈을 푼다는 건 최악은 지났다는 뜻이다.",
+    ("봄", "달러: 빠르게 떨어진다"):
+        "달러지수가 6개월간 5% 이상 떨어졌다.\n"
+        "달러가 떨어지기 시작하면 무섭게 떨어진다. 숏 잡지 마라.\n"
+        "강달러가 풀린다는 건 유동성이 돌아온다는 뜻이다. 주식 살 때다.",
+    ("봄", "야드커브: 빠르게 개선 중이다"):
+        "야드커브 스프레드가 3개월간 30bp 이상 올라갔다.\n"
+        "주가는 위치가 아닌 속도에 반응한다. 채권도 마찬가지다.\n"
+        "수준이 아직 역전이어도 속도가 양수면 봄이다. 방향이 바뀐 거다.",
+    ("봄", "신용: 공포가 물러나는 중이다"):
+        "하이일드 스프레드가 6개월간 1%p 이상 줄었다. 1년 내 고점이 5% 이상이었다.\n"
+        "회사가 망할 수 있다는 공포가 물러나는 중이다.\n"
+        "스프레드가 줄어드는 속도가 빠를수록 봄이 강하다.",
+    ("봄", "공포: 극단을 찍고 진정됐다"):
+        "VIX가 90일 내 35를 넘었다가 지금 25 아래로 내려왔다.\n"
+        "VIX 35에 지수 사서 실패한 사람 본 적 있니? 없다.\n"
+        "극단의 공포가 진정되는 시점이 봄이다. 두려움에 저항하는 자만 돈을 번다.",
+    ("봄", "실업률: 4%를 넘었거나 급등했다"):
+        "실업률이 4%를 넘었거나 최근 3개월간 0.5%p 이상 올랐다.\n"
+        "실업률 올라갈 때부터 주식을 사기 시작하면 된다. 그 출발 신호다.\n"
+        "사람들은 이 숫자를 보고 겁먹는다. 그래서 싸게 살 수 있다.",
+    ("봄", "바닥: 고점에서 20% 이상 빠졌다"):
+        "S&P500이 52주 고점에서 20% 이상 빠진 상태다.\n"
+        "두려울 때 사라. 깊은 조정 없이는 진짜 바닥 아니다.\n"
+        "물려도 되는 시기다. 지금 안 사면 언제 사게?",
+    ("봄", "실적: 나쁘지만 바닥은 지났다"):
+        "기업 실적이 전년 대비 마이너스다. 그런데 3개월 전보다는 나아지고 있다.\n"
+        "역실적장세에선 매수가 정석이다.\n"
+        "실적이 빠지는 속도가 줄어든다는 건 바닥을 지났다는 뜻이다.",
+    ("봄", "밸류: 거품이 다 빠졌다"):
+        "Shiller CAPE 22 이하다.\n"
+        "위에서 내려온 자리다. 거품이 다 빠졌다는 뜻이다.\n"
+        "이 수준에서 주식 사서 장기로 손해 본 적 거의 없다.",
+    ("봄", "반도체: 가장 먼저 저점을 본다"):
+        "반도체가 시장보다 1개월 수익률이 좋다. S&P는 -15% 이상, 반도체는 -20% 이상 빠진 상태다.\n"
+        "단순 반도체 강세가 아니다. 진짜 조정장 안에서의 반도체 선행이다.\n"
+        "그 어떤 섹터보다도 반도체가 가장 먼저 저점을 본다.",
+    # ─────────────────── 여름 (9박스) ───────────────────
+    ("여름", "채권: 형이 안심하고 있다"):
+        "3개월물과 10년물이 정상이다. 장기가 단기보다 높다. 1년 내 역전도 없었다.\n"
+        "채권 형이 안심하고 있는 상태다.\n"
+        "채권시장이 편안하면 주식시장도 편안하다.",
+    ("여름", "연준: 건드리지 않고 있다"):
+        "기준금리 6개월 변화가 ±0.5%p 이내다.\n"
+        "인상도 인하도 아닌 정체. 시장이 가장 편안한 자리다.\n"
+        "연준이 조용하면 주가는 실적만 따라간다.",
+    ("여름", "신용: 아무도 걱정하지 않는다"):
+        "하이일드 스프레드 4% 미만이다.\n"
+        "회사가 망할 수 있다는 생각을 안 한다.\n"
+        "위험하다. 아무도 걱정 안 할 때가 가장 걱정해야 할 때다.",
+    ("여름", "공포: 없다"):
+        "VIX 1개월 평균 20 미만이다.\n"
+        "시장에 공포가 없다. 여름의 본질이다.\n"
+        "그러나 공포가 없다는 건 보험이 싸다는 뜻이기도 하다.",
+    ("여름", "고용: 견고하다"):
+        "실업률 안 오르고 신규 일자리 월 10만 이상이다.\n"
+        "노동시장이 견고하다. 소비도 따라온다.\n"
+        "미국 GDP의 70%가 소비다. 고용이 버티면 소비가 버틴다.",
+    ("여름", "시장 폭: 전 업종 동반 강세"):
+        "동일가중 S&P(RSP)와 시총가중 S&P 둘 다 6개월 양수다.\n"
+        "메가캡만 끌고 가는 가짜 강세가 아니다. 전 업종이 함께 간다.\n"
+        "진짜 여름은 시장 폭이 건강하다.",
+    ("여름", "실적: 좋고 더 좋아지고 있다"):
+        "기업 실적 성장률 5% 이상이고 가속 중이다.\n"
+        "주가는 위치가 아닌 속도에 반응한다. 속도가 양수면 여름이다.\n"
+        "실적이 좋은 건 당연하다. 더 빨라지고 있느냐가 관건이다.",
+    ("여름", "밸류: 정당화 가능하다"):
+        "Shiller CAPE 30 미만이다.\n"
+        "비싸지 않다는 뜻이 아니다. 아직 광기는 아니라는 뜻이다.\n"
+        "30 넘으면 이 박스가 꺼진다. 그게 정직한 출력이다.",
+    ("여름", "반도체: 시장을 끌고 간다"):
+        "반도체가 시장보다 6개월 수익률이 좋다.\n"
+        "반도체가 시장을 끌고 갈 때가 진짜 여름이다.\n"
+        "반도체 산업의 주가는 시장에 선행한다. 반도체가 강하면 시장도 강하다.",
+    # ─────────────────── 가을 (11박스) ───────────────────
+    ("가을", "채권: 역전이 시작됐거나 깊어지고 있다"):
+        "3개월물과 10년물 역전이 신규 진입했거나 더 깊어지는 중이다.\n"
+        "채권시장의 붕괴는 세상물정 모르는 나스닥 동생을 보고 느낀 걱정의 결과다.\n"
+        "가을의 첫 신호다.",
+    ("가을", "연준: 고점에서 내리거나 올리고 있다"):
+        "기준금리가 10년 중 상위 30%인데 인하했다. 또는 6개월간 50bp 이상 올렸다.\n"
+        "고점에서의 금리인하는 주가 하락을 이끈다. 가을의 본질이다.\n"
+        "연준이 올리고 싶다 해도 올릴 수 있다는 뜻이 아니다.",
+    ("가을", "달러: 비정상이다"):
+        "달러지수가 6개월간 8% 넘게 올랐거나 108을 넘었다.\n"
+        "지금 달러는 비정상이다. 강달러는 부채리스크에 영향을 줘서 사람들을 불안하게 만든다.\n"
+        "불안감이 다시 달러수요로 이어져 더 강달러가 되는 달러루프다.",
+    ("가을", "야드커브: 빠르게 악화 중이다"):
+        "야드커브 스프레드가 3개월간 30bp 이상 떨어졌다.\n"
+        "채권이 형이다. 형이 빠르게 나빠지고 있으면 동생도 곧 당한다.\n"
+        "속도가 음수면 가을이다. 느리게 나빠지는 건 조정, 빠르게 나빠지는 건 전환이다.",
+    ("가을", "신용: 슬슬 벌어진다"):
+        "하이일드 스프레드가 6개월간 80bp 이상 또는 3개월간 50bp 이상 벌어졌다.\n"
+        "회사가 망할 수 있다는 생각이 슬슬 돌기 시작한다.\n"
+        "아직 크게 벌어진 건 아니다. 그래서 위험하다. 사람들이 무시하니까.",
+    ("가을", "경기활동: 둔화 중이다"):
+        "시카고 연준 경기활동지수(CFNAI) 3개월 평균이 음수다.\n"
+        "105개 거시 지표를 합성한 지수가 평균 아래로 내려갔다.\n"
+        "경기가 둔화되기 시작했다. 주가는 경기를 따라가게 되어있다.",
+    ("가을", "반도체: 먼저 꺾였다"):
+        "반도체 3개월 수익률이 시장보다 나쁘다. 시장 6개월은 아직 양수인데 반도체 1개월은 음수다.\n"
+        "반도체가 먼저 꺾였다. 시장은 아직 모른다.\n"
+        "반도체가 선행한다. 안 그랬던 적이 없다.",
+    ("가을", "시장 폭: 메가캡만 끌고 간다"):
+        "시총가중 SPY가 동일가중 RSP보다 3개월 수익률이 4%p 이상 높고 RSP는 음수다.\n"
+        "거대주만 끌고 가는 가짜 강세다. 시장 폭이 무너진 신호다.\n"
+        "빈약한 기둥에 무거운 지붕이 얹힌 상태다.",
+    ("가을", "실적: 좋지만 느려지고 있다"):
+        "실적 성장률은 아직 양수다. 그러나 3개월 전보다 1%p 이상 둔화됐다.\n"
+        "주가는 위치가 아닌 속도에 반응하는 방정식이다. 속도가 느려지면 떨어진다.\n"
+        "실적이 좋다고 안심하지 마라. 느려지고 있느냐가 전부다.",
+    ("가을", "밸류: 어떤 잣대로 봐도 비싸다"):
+        "후행 PER 28 이상이거나 Shiller CAPE 32 이상이다.\n"
+        "셋 중 하나만 극단이어도 켜진다. 어떤 잣대로 봐도 비싸다는 뜻이다.\n"
+        "주가가 붕괴될 때 주가보다 실적이 더 빠른 속도로 붕괴되기에 PER이 50, 60, 70, 80 된다.",
+    ("가을", "CAPE: 역사가 말한다"):
+        "Shiller CAPE 35 이상이거나, 32 이상이면서 20년 백분위 85% 이상이다.\n"
+        "역사상 이 정도 고평가된 PER에서 숏을 잡아 실패한 사례가 없다. 140년간 예외 없었다.\n"
+        "항룡유회(亢龍有悔)다. 극에 이른 것은 반드시 내려온다.",
+    # ─────────────────── 겨울 (9박스) ───────────────────
+    ("겨울", "채권: 역전이 풀리는데 경제가 무너진다"):
+        "역전이 풀리는 중이다. 그런데 실업률이 3개월간 0.3%p 이상 올랐다.\n"
+        "봄과 같은 신호이지만 실적 빠지고 실업률 오를 때 함께 잡히면 겨울이다.\n"
+        "역전이 풀리는 이유가 다르다. 봄은 회복, 겨울은 연준이 급하게 인하해서.",
+    ("겨울", "연준: 급하게 내리고 있다"):
+        "기준금리가 3개월간 내렸다. 그런데 금리 수준이 아직 중립 이상이다.\n"
+        "저점에서 내리면 봄이고 고점/중립에서 내리면 겨울이다.\n"
+        "연준이 급하게 내린다는 건 뭔가 터졌다는 뜻이다.",
+    ("겨울", "신용: 이미 깨졌다"):
+        "하이일드 스프레드 5% 이상이다.\n"
+        "신용시장이 이미 깨진 상태다. 가을 다음 단계다.\n"
+        "채권시장은 거의 파멸이다. 주식시장이 그걸 모른다.",
+    ("겨울", "공포: 한 달 내내 지속된다"):
+        "VIX 30 이상이고 1개월 평균도 25 이상이다.\n"
+        "공포가 일시 스파이크가 아니다. 한 달 내내 유지된다. 진짜 패닉이다.\n"
+        "주식은 지옥이다. 환영한다. 이게 주식이다.",
+    ("겨울", "실업률: 빠르게 오르고 있다"):
+        "실업률이 3개월간 0.5%p 이상 올랐다.\n"
+        "미국 고용시장은 유연하다. 3.5%가 두 달 만에 14%가 되기도 한다.\n"
+        "실업률이 튀기 시작하면 빠르다. 소프트랜딩은 힘들다.",
+    ("겨울", "하락: 멈췄지만 바닥이다"):
+        "S&P500이 -20% 이상 빠진 상태에서 1개월 변화가 ±3% 이내다.\n"
+        "공포는 있는데 추가 하락은 멈췄다. 바닥을 다지는 자리다.\n"
+        "건강한 신체에선 비만이 걱정이지만 죽을 병 걸리면 살은 저절로 빠진다.",
+    ("겨울", "실적: 확실히 무너졌다"):
+        "기업 실적 성장률이 -5% 이하다.\n"
+        "단순 한 분기 빠진 게 아니다. 추세적 감소다. 진짜 역실적장세다.\n"
+        "경기침체는 이미 시작됐다. 그리고 경기침체는 항상 투자의 적기다.",
+    ("겨울", "달러: 시스템이 위험하다"):
+        "달러지수 108 이상이고 3개월간 5% 넘게 올랐다.\n"
+        "달러루프에 빠졌다. 이거 놔두면 시스템이 무너진다.\n"
+        "연준이든 BOJ든 이 고리 끊기 위한 액션이 있을 거다. 안 그러면 인플레 전에 시스템이 위험하다.",
+    ("겨울", "추세: 200일선 아래 두 달째"):
+        "S&P500이 200일 이동평균선 아래에서 60일 이상 머물고 있다.\n"
+        "약세장이 확정된 상태다. 단기 반등에 속지 마라.\n"
+        "기다려라. 언제까지 기다려야 하는지 모르는 기다림이지만 기다려라.",
 }
 
 def easy_help(mode, text):
@@ -5971,7 +6066,7 @@ def main():
     }
     </style>""", unsafe_allow_html=True)
     st.sidebar.title("👁️ 미어캣의 관측소")
-    st.sidebar.caption(f"V{VERSION} · 눈 11 + 심안 21")
+    st.sidebar.caption(f"V{VERSION} · 1층 40박스 + 2층 ANFCI/CAPE")
     cfg = lcfg()
     api_key = st.sidebar.text_input("FRED API 키", value=cfg.get("fred_api_key", ""), type="password")
     if api_key and api_key != cfg.get("fred_api_key", ""): scfg({"fred_api_key": api_key}); st.sidebar.success("저장", icon="✅")
@@ -7792,10 +7887,10 @@ tr:hover{{background:#263238}}
         with s2: st.markdown(sgauge(ms, bsl("미어캣 스코어", mode), quote=_mq_text, info=_tip_mk(ms) if ms is not None else None), unsafe_allow_html=True)
         with s3:
             _cd = C["card"]; _bd = C["border"]; _m = C["muted"]; _t = C["text"]
-            _sb = season_auto.lstrip("초늦")
+            _sb = (season_auto.lstrip("초늦") if season_auto else None) or "—"
             s_col = SC.get(_sb, C["gold"]) if _sb in SC else C["gold"]
-            s_disp = season_label(season_auto, mode)
-            _si = _tip(_tip_season(season_auto))
+            s_disp = season_label(season_auto, mode) if season_auto else "—"
+            _si = _tip(_tip_season(season_auto)) if season_auto else ""
             # V3.4 역사 매칭 — 사계절 카드 하단에 era만 노출 (코멘트/인용은 아래 별도 카드)
             _era_h = ""
             if _hist_match.get("era"):
@@ -9165,22 +9260,50 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
         st.subheader(bsl("🌡️ 계절 판단", mode))
         st.caption("날씨보단 계절이 중요하다. 관찰이다. 개입이 아니다.")
 
-        # 상단: 계절 판정 결과
+        # 상단: V8 계절 판정 + 2층 (ANFCI / CAPE_pct)
+        # V8 결과 추출 (히스테리시스 + prefix + conf 적용)
+        _v8_res = evaluate_v651_today(offset=0) or {}
+        _v_l2 = _v8_res.get("v8_layer2") or {}
+        _anfci = _v_l2.get("anfci"); _anfci_label = _v_l2.get("anfci_label", "데이터 없음")
+        _cape_pct = _v_l2.get("cape_pct"); _cape_label = _v_l2.get("cape_pct_label", "데이터 없음")
+        _recov_pct = _v_l2.get("recovery_pct"); _recov_label = _v_l2.get("recovery_label", "데이터 없음")
+        _anfci_color = "#ff4444" if (_anfci is not None and _anfci >= 1.0) else \
+                       ("#ffaa00" if (_anfci is not None and _anfci >= 0.5) else \
+                       ("#fcc41f" if (_anfci is not None and _anfci >= 0.0) else C["muted"]))
+        _cape_color = "#ff4444" if (_cape_pct is not None and _cape_pct >= 90) else \
+                      ("#ffaa00" if (_cape_pct is not None and _cape_pct >= 75) else \
+                      ("#fcc41f" if (_cape_pct is not None and _cape_pct >= 50) else C["muted"]))
+        _recov_color = "#22c55e" if (_recov_pct is not None and _recov_pct <= -10) else \
+                       ("#fcc41f" if (_recov_pct is not None and _recov_pct <= -5) else \
+                       ("#ff4444" if (_recov_pct is not None and _recov_pct > 0) else C["muted"]))
+        _anfci_str = f"{_anfci:+.2f}" if _anfci is not None else "n/a"
+        _cape_str = f"{_cape_pct:.0f}" if _cape_pct is not None else "n/a"
+        _recov_str = f"{_recov_pct:+.1f}%" if _recov_pct is not None else "n/a"
+
         b1, b2 = st.columns([1, 2])
         with b1:
-            _sb2 = season_auto.lstrip("초늦")
+            _sb2 = (season_auto.lstrip("초늦") if season_auto else None) or "—"
             sc_ = SC.get(_sb2, C["gold"]) if _sb2 in SC else C["gold"]
-            s_disp2 = season_label(season_auto, mode)
+            s_disp2 = season_label(season_auto, mode) if season_auto else "—"
+            _si2 = _tip(_tip_season(season_auto)) if season_auto else ""
             st.markdown(f"""<div style="background:{C['card']};border:2px solid {sc_};border-radius:12px;padding:24px;text-align:center">
                 <div style="font-size:var(--mac-fs-md);color:{C['muted']}">자동 판정</div>
-                <div style="font-size:var(--mac-fs-display);font-weight:700;color:{sc_};margin:10px 0">{s_disp2}{_tip(_tip_season(season_auto))}</div>
-                <div style="font-size:var(--mac-fs-md);color:{C['text']}">확신도: {season_conf}</div></div>""", unsafe_allow_html=True)
+                <div style="font-size:var(--mac-fs-display);font-weight:700;color:{sc_};margin:10px 0">{s_disp2}{_si2}</div>
+                <div style="font-size:var(--mac-fs-md);color:{C['text']}">확신도: {season_conf}</div>
+                <div style="font-size:var(--mac-fs-sm);color:{_anfci_color};margin-top:10px;font-weight:600">금융여건 (ANFCI) {_anfci_str} · {_anfci_label}</div>
+                <div style="font-size:var(--mac-fs-sm);color:{_cape_color};margin-top:4px;font-weight:600">밸류 (CAPE %ile) {_cape_str} · {_cape_label}</div>
+                <div style="font-size:var(--mac-fs-sm);color:{_recov_color};margin-top:4px;font-weight:600">회복 신호 (ICSA) {_recov_str} · {_recov_label}</div>
+                </div>""", unsafe_allow_html=True)
         with b2:
+            # V8 분모 가변 (봄/가을 11, 여름/겨울 9)
+            _v8_evals = {sn: len(V8_SEASON_BOXES[sn]) for sn in ("봄","여름","가을","겨울")}
             _fig_season = go.Figure()
             for sn in ["봄", "여름", "가을", "겨울"]:
-                _fig_season.add_trace(go.Bar(x=[sn], y=[season_scores[sn]], marker_color=SC[sn],
-                              text=[f"{season_scores[sn]}/9"], textposition="outside", name=sn))
-            _fig_season.update_layout(**_ly("", 250), showlegend=False); _fig_season.update_yaxes(range=[0, 9])
+                _on = int(season_scores.get(sn, 0))
+                _tot = _v8_evals[sn]
+                _fig_season.add_trace(go.Bar(x=[sn], y=[_on], marker_color=SC[sn],
+                              text=[f"{_on}/{_tot}"], textposition="outside", name=sn))
+            _fig_season.update_layout(**_ly("", 250), showlegend=False); _fig_season.update_yaxes(range=[0, 12])
             st.plotly_chart(_fig_season, use_container_width=True, key="chart_season")
 
         # ── V3.10.0 역사 매칭 카드 (top 3 풀 디테일 + 추이 + 사이클 게이지 + 차원 매트릭스) ──
@@ -9431,9 +9554,9 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
                     </div>{_diff_short}</div>""", unsafe_allow_html=True)
 
         st.markdown("---")
-        st.caption("아래는 데이터가 자동으로 판정한 결과다. 네 손이 안 탄다. 9박스 중 가장 많이 켜진 계절이 지금 계절. (공통 5 + 고유 4 구조)")
+        st.caption("V8.0 40박스 — 봄 11 / 여름 9 / 가을 11 / 겨울 9. 가장 많이 켜진 계절이 지금 계절.")
 
-        # 체크리스트 읽기 전용 표시
+        # 체크리스트 읽기 전용 표시 (V8 분모 가변)
         _g = C["green"]; _r = C["red"]; _m = C["muted"]; _cd = C["card"]; _bd = C["border"]; _br = C["bright"]
         c1, c2 = st.columns(2)
         season_icons = {"봄": "🌸", "여름": "☀️", "가을": "🍂", "겨울": "❄️"}
@@ -9442,10 +9565,12 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
         order = ["봄", "가을", "여름", "겨울"]  # 왼쪽: 봄+가을, 오른쪽: 여름+겨울
         for sn in order:
             items = season_checks.get(sn, [])
-            sc_col = SC[sn]; icon = season_icons[sn]; sub = season_subs[sn]; cnt = season_scores[sn]
+            sc_col = SC[sn]; icon = season_icons[sn]; sub = season_subs[sn]
+            cnt = int(season_scores.get(sn, 0))
+            tot = len(V8_SEASON_BOXES.get(sn, []))
             target_col = c1 if sn in ["봄", "가을"] else c2
             with target_col:
-                st.markdown(f"**{icon} {sn}** ({cnt}/9) — <span style='color:{sc_col}'>{sub}</span>", unsafe_allow_html=True)
+                st.markdown(f"**{icon} {sn}** ({cnt}/{tot}) — <span style='color:{sc_col}'>{sub}</span>", unsafe_allow_html=True)
                 for label, val in items:
                     check = "✅" if val else "⬜"
                     color = _g if val else _m
@@ -9463,16 +9588,49 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
             _jbtn(export_season_d, "season", "📥 계절 판단 JSON", "_season")
             st.download_button("📥 계절 HTML", _export_html(export_season_d, section="계절 판단", charts=[(_fig_season, "계절 점수")] if _fig_season else None).encode("utf-8"), f"season_{_ds}.html", "text/html", key="exp_season_html")
 
+        # ─── 📐 이 판정기에 대해 (설계 / 검증 / 신뢰도 / 한계) ───
+        st.markdown("---")
+        with st.expander("📐 이 판정기에 대해 — 설계 · 검증 · 신뢰도 · 한계"):
+            st.markdown(f"""
+<div style='font-size:var(--mac-fs-sm); color:{C['text']}; line-height:1.65'>
+
+**설계 과정**
+92개 거시 박스 후보 풀에서 ablation × grid search × 답지 채점 4단계 통과 후 최종 40박스. 봄 11 + 여름 9 + 가을 11 + 겨울 9. 모든 박스는 raw count, 가중치 없음. 가산/override/PA 가드 전면 폐기. 단일 임계가 단일 박스를 결정한다.
+
+**검증**
+1980-01 ~ 2024-12 일별 풀 백테스트 11,740 영업일. 답지 50개 (1980-2024 GT) raw 71.60% / weighted 70.82%. 5시점 광기 검증 (1999, 2007, 2021, 2024) 통과. 90일 라벨 안정성 평균 3.84 flip / 중간값 2 / P75 6 — 분기당 2회 라벨 변동.
+
+**측면별 신뢰도**
+여름 식별 매우 높음 (77%). 겨울 식별 높음 (71%). 가을 식별 보통 (1층 base 60% + 2층 ANFCI/CAPE 보조 65% = 합산 80%+). 봄 식별 낮음 (40%) — 1996 이전 hy/sox/rsp 결측 영향으로 1980-1995 시점 특히 약함.
+
+**객관성 (외부 기관 지표 활용)**
+ANFCI = 시카고 연준 105개 거시 합성 (1971+ 주간, 자체 정규화). CFNAI = 시카고 연준 (1967+ 월간). CAPE = Shiller 데이터셋 (1881+, multpl + Top10 가중). VIX = CBOE. HY OAS = ICE BofA. ICSA = 미 노동부 신규 실업급여 청구건수 (1967+ 주간). 자체 정규화 / 합성 점수 만들지 않는다 — 외부 공인 기관이 이미 정규화한 걸 그대로 쓴다.
+
+**2층 — 부가 정보 (ANFCI · CAPE · 회복 신호)**
+1층 박스가 "지금 상태"를 측정한다면 2층은 "위험과 방향"을 보여준다. **금융여건 (ANFCI)** = 자금줄 긴축도. **밸류 (CAPE %ile)** = 역사적 고/저평가 위치. **회복 신호 (ICSA)** = 신규 실업급여 청구 4주 평균이 직근 13주 정점 대비 얼마나 떨어졌는가 (음수일수록 회복 진행). 합산 안 한다 — 세 축 독립 표시. 1층이 "겨울" 판정해도 회복 신호 🟢 (정점 후 −10%↓) 면 "바닥 지났을 수 있다"고 사용자가 직접 해석한다. 봄 GT (침체 바닥 회복기) 시점은 박스 카운트 시스템 구조상 겨울로 보일 수밖에 없는데, 이 한계를 회복 신호 축으로 보완한다 — 시스템이 봄을 단정하는 게 아니라 재료를 주고 사용자가 판단한다.
+
+**robust 한 점**
+사이클 후순위 동률 처리. 히스테리시스 margin 1.5 — 직전 1일 anchor + margin 미달 시 라벨 유지. 디스크 캐시 24h. 결측 박스는 분모에서 빠짐 (None 처리). fpe 영구 폐기 후 cape + tpe 만 사용 — backtest 일관성 보장.
+
+**한계**
+1995 이전 시점 = 박스 평가 가능 수 < 30 (전체 40 중) → 신뢰도 낮음. fpe historical 시계열 부재. prefix(초/늦) 룰은 V69 비율 그대로 적용 — 답지 검증 안 거침, 직관 보조용. F8 반사성 / B등급 (실적 / 부채/GDP / 배당수익률) 박스 보류.
+
+**권하지 않는 사용**
+단기 매매 시그널. 단일 박스 점등으로 전환 판단. 1995 이전 시점 backtest 결과 절대 신뢰. prefix(초/늦)를 시점 진단 핵심 기준으로 사용. 박스 점수가 절대 임계가 아니라 분포 통과 임계라는 점 잊으면 안 된다.
+
+</div>""", unsafe_allow_html=True)
+
     # ═══ TAB 5: 관찰 기록 ═══
     with tabs[6]:
         easy_help(mode, HELP_TAB5)
         st.subheader(bsl("📋 관찰 기록", mode))
         od = st.date_input("관찰일", value=datetime.now().date(), key="od")
-        # 자동 판정 결과를 기본값으로
+        # 자동 판정 결과를 기본값으로 (season_auto None-safe)
         season_list = ["봄", "여름", "가을", "겨울"]
         auto_idx = 0
-        for i, s in enumerate(season_list):
-            if s in season_auto: auto_idx = i; break
+        if season_auto:
+            for i, s in enumerate(season_list):
+                if s in season_auto: auto_idx = i; break
         os_ = st.selectbox("계절 (자동 판정 기반)", season_list, index=auto_idx, key="os")
         ob = st.text_area("근거", height=80, key="ob")
         gss = f"{gs:.0f}" if gs is not None else "?"
