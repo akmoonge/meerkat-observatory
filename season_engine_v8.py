@@ -3,7 +3,7 @@
    2026-04-29 보강 명세 적용 — 코퍼스/36박스 출처별로 박스 풀 두텁게.
    2026-04-29 1단계 — 실적 박스(R4) 4개 추가. eg(earnings growth) 일별 시계열 활용.
    2026-04-29 2단계 — 봄 교차 박스(S_CROSS1, S_CROSS2) 2개 추가. Fidelity 선행/후행 교차.
-   2026-04-29 도함수 — S_B4 (봄 야드커브 급개선) + A_B4 (가을 야드커브 급악화) 2박스.
+   2026-04-29 도함수 — S_B4 (봄 채권금리곡선 급개선) + A_B4 (가을 채권금리곡선 급악화) 2박스.
    사용자 권고 38박스 채점은 ablation 스크립트의 keep set 으로 결정.
 
 원본 (meerkat_observatory.py / season_engine_core.py / season_classifier_v651.py) 무수정.
@@ -110,8 +110,8 @@ GS_A_V1_CAPE   = 32      # A_V1 cape 가지
 GS_A_V2_CAPE   = 35      # A_V2 단독 cape 가지
 GS_S_V1        = 25      # S_V1 봄 밸류 가드 (cape ≤)
 GS_U_V1        = 30      # U_V1 여름 밸류 가드 (cape <)
-GS_S_B4        = 0.3     # S_B4 야드커브 도함수 (+)
-GS_A_B4        = -0.3    # A_B4 야드커브 도함수 (-)
+GS_S_B4        = 0.3     # S_B4 채권금리곡선 도함수 (+)
+GS_A_B4        = -0.3    # A_B4 채권금리곡선 도함수 (-)
 GS_S_C1        = -1.0    # S_C1 hy_6m_chg <
 GS_A_C1        = 0.8     # A_C1 hy_6m_chg >
 GS_S_R4        = 1       # S_R4 eg_3m_chg >
@@ -318,7 +318,7 @@ def evaluate_v8_layer1(raw, offset, tpe_series=None, cfnai_series=None,
     boxes = {}
 
     # ─ 봄 8박스 ─
-    # S_B1: 야드커브 정상화 + Initial Claims 정점 후 하락 (ε 패치 v3)
+    # S_B1: 채권금리곡선 정상화 + Initial Claims 정점 후 하락 (ε 패치 v3)
     # recovering 의 두 얼굴 분기 (Initial Claims 도함수 게이트):
     #   iclaims_4w_now < iclaims_4w_3m_max * 0.9 = 정점에서 10%+ 하락 (회복 진행) → 봄
     #   그 외 = 정점 근처/상승 중 (W_B1 으로 분기)
@@ -380,7 +380,7 @@ def evaluate_v8_layer1(raw, offset, tpe_series=None, cfnai_series=None,
                              and cfnai_3m_avg > cfnai_6m_avg
                              and un_3m_chg is not None and un_3m_chg > 0,
                              cfnai_3m_avg, cfnai_6m_avg, un_3m_chg)
-    # S_B4: 봄 야드커브 급속 개선 (도함수 +0.3) — F3 "주가는 속도에 반응"
+    # S_B4: 봄 채권금리곡선 급속 개선 (도함수 +0.3) — F3 "주가는 속도에 반응"
     # 수준 게이트 적용 (1차 시뮬에서 겨울 GT 5/7 점등 → 명세 트리거):
     #   t10y3m_now > -0.5 일 때만 점등 = 정상/얕은역전에서만 봄. 깊은역전 차단.
     boxes["S_B4"] = _box(t10y3m_3m_chg is not None and t10y3m_3m_chg > GS_S_B4
@@ -460,7 +460,7 @@ def evaluate_v8_layer1(raw, offset, tpe_series=None, cfnai_series=None,
     boxes["A_R4"] = _box(eg_now is not None and eg_now > 0
                          and eg_3m_chg is not None and eg_3m_chg < GS_A_R4,
                          eg_now, eg_3m_chg)
-    # A_B4: 가을 야드커브 급속 악화 (도함수 -0.3) — 1994/2006/2018 패턴
+    # A_B4: 가을 채권금리곡선 급속 악화 (도함수 -0.3) — 1994/2006/2018 패턴
     boxes["A_B4"] = _box(t10y3m_3m_chg is not None and t10y3m_3m_chg < GS_A_B4,
                          t10y3m_3m_chg)
     # A_C5: 가을 HY 스프레드 급속 확산 (F3 신용 도함수)
@@ -473,7 +473,7 @@ def evaluate_v8_layer1(raw, offset, tpe_series=None, cfnai_series=None,
                          cpi_3m_chg, cpi_now)
 
     # ─ 겨울 8박스 ─
-    # W_B1: 야드커브 정상화 + 실업 상승 + Initial Claims 정점 근처 (ε 패치 v3)
+    # W_B1: 채권금리곡선 정상화 + 실업 상승 + Initial Claims 정점 근처 (ε 패치 v3)
     # iclaims_4w_now ≥ iclaims_4w_3m_max * 0.9 = 신규 청구 아직 정점 근처/상승 → 겨울
     # iclaims_4w_now < iclaims_4w_3m_max * 0.9 인 경우는 S_B1 영역 (봄 회복기).
     boxes["W_B1"] = _box(inv_state == "recovering"

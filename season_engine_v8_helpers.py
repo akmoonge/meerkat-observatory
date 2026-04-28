@@ -16,7 +16,7 @@
   - δ. A04 디커플링 재설계 — VIX 단독 임계 분리 + HY 1y 평균 대비 박스 신설.
        가지1: hy_3m_chg > 0.3 AND vix < 18
        가지2: hy_pct > hy_1y_avg * 1.1 AND vix < 20
-  - ε. S01 봄 야드커브 정상화 + un_3m_chg < 0 게이트.
+  - ε. S01 봄 채권금리곡선 정상화 + un_3m_chg < 0 게이트.
        recovering 은 침체 후 회복(봄) AND 침체 진입 직전(겨울 초) 양쪽 모두 발생.
        구분 = 실업률 방향. < 0 → 봄, ≥ 0 → 겨울 W01 으로 넘김. (2007-10 가을 1위 잡음)
   - ζ. stale 게이트 전체 적용 + CFNAI 도입.
@@ -430,7 +430,7 @@ def evaluate_v8_a48(raw, offset, tpe_series=None, cfnai_series=None,
     # ════════════════════ 박스 정의 ════════════════════
     # ─── 봄 ───
     B_spring = {
-        # S01: 야드커브 정상화 중 (ε 패치 — 실업 방향 게이트 추가)
+        # S01: 채권금리곡선 정상화 중 (ε 패치 — 실업 방향 게이트 추가)
         # recovering 은 두 시점에서 발생: 침체 후 회복(봄) AND 역전 해소 직후 침체 진입 직전(겨울 초).
         # 구분 = un_3m_chg 부호. < 0 → 봄, ≥ 0 → 겨울 W01 으로 넘김.
         "B1_S01_curve_recover":  _box(inv_state == "recovering"
