@@ -6104,6 +6104,22 @@ def main():
         st.cache_data.clear()
         _dc_clear()
         st.rerun()
+    # 실패 소스만 재시도 — streamlit cache_data 만 클리어, 디스크 캐시 보존.
+    # 정상 소스는 디스크 캐시 즉시 히트 (네트워크 호출 0). 실패 소스는 디스크 캐시
+    # 가 애초에 저장 안 됐으므로 API 재호출 시도.
+    if st.sidebar.button("🔁 실패 소스만 재시도", use_container_width=True,
+                         help="정상 소스는 디스크 캐시에서 즉시 복원, 실패한 소스만 API 재호출"):
+        try: ffred_daily.clear()
+        except Exception: pass
+        try: ffred_weekly.clear()
+        except Exception: pass
+        try: ffred_monthly.clear()
+        except Exception: pass
+        try: ffred_quarter.clear()
+        except Exception: pass
+        try: fyf_batch.clear()
+        except Exception: pass
+        st.rerun()
     # ── 자가 업데이트 (GitHub raw, git 불필요) ──
     if st.sidebar.button("⬇️ 업데이트 (GitHub)", use_container_width=True, help="GitHub 에서 최신 버전 다운로드. git 불필요."):
         with st.spinner("최신 버전 확인 중..."):
