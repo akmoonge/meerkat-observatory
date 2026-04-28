@@ -9342,6 +9342,21 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
         _anfci_str = f"{_anfci:+.2f}" if _anfci is not None else "n/a"
         _cape_str = f"{_cape_pct:.0f}" if _cape_pct is not None else "n/a"
         _recov_str = f"{_recov_pct:+.1f}%" if _recov_pct is not None else "n/a"
+        _tip_anfci = ("시카고 연준 ANFCI (Adjusted National Financial Conditions Index).\n"
+                      "주식·채권·환·신용 105개 지표를 합성해서 '돈 빌리기 얼마나 어려운가' 를 점수화한다.\n"
+                      "0 = 평균.   양수 = 긴축적 (대출 까다롭고 회사채 스프레드 벌어진다).   음수 = 완화적.\n"
+                      "1.0 넘으면 금융 위기 수준. -0.5 미만이면 돈잔치.\n"
+                      "주간 갱신, 1971+.")
+        _tip_cape = ("Shiller CAPE (10년 평균 이익 PE) 의 직근 20년 분포 백분위.\n"
+                     "100 = 20년 중 가장 비싸다.   50 = 중간.   0 = 20년 최저.\n"
+                     "75% 넘으면 역사적 고평가, 90% 넘으면 거품권.\n"
+                     "현재 비싸냐 싸냐를 묻는 거지 '이게 곧 빠진다' 는 신호 아니다 — 비싼 게 더 비싸질 수도 있다.")
+        _tip_recov = ("미국 신규 실업급여 청구건수 (Initial Claims) 4주 평균이 직근 13주 정점 대비 얼마나 빠졌는가.\n"
+                      "🟢 -10%↓ = 회복 진행 (해고 줄어드는 중)\n"
+                      "🟡 -5%↓ = 회복 시작\n"
+                      "⚪ 0 부근 = 정점 부근\n"
+                      "🔴 양수 = 신규 청구 상승 중 (해고 늘어난다)\n"
+                      "1층이 '겨울' 판정해도 이게 🟢 면 '바닥은 지났다' 신호. 봄 임박 보조 지표.")
 
         b1, b2 = st.columns([1, 2])
         with b1:
@@ -9353,9 +9368,9 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
                 <div style="font-size:var(--mac-fs-md);color:{C['muted']}">자동 판정</div>
                 <div style="font-size:var(--mac-fs-display);font-weight:700;color:{sc_};margin:10px 0">{s_disp2}{_si2}</div>
                 <div style="font-size:var(--mac-fs-md);color:{C['text']}">확신도: {season_conf}</div>
-                <div style="font-size:var(--mac-fs-sm);color:{_anfci_color};margin-top:10px;font-weight:600">금융여건 (ANFCI) {_anfci_str} · {_anfci_label}</div>
-                <div style="font-size:var(--mac-fs-sm);color:{_cape_color};margin-top:4px;font-weight:600">밸류 (CAPE %ile) {_cape_str} · {_cape_label}</div>
-                <div style="font-size:var(--mac-fs-sm);color:{_recov_color};margin-top:4px;font-weight:600">회복 신호 (ICSA) {_recov_str} · {_recov_label}</div>
+                <div style="font-size:var(--mac-fs-sm);color:{_anfci_color};margin-top:10px;font-weight:600">금융여건 (ANFCI){_tip(_tip_anfci)} {_anfci_str} · {_anfci_label}</div>
+                <div style="font-size:var(--mac-fs-sm);color:{_cape_color};margin-top:4px;font-weight:600">밸류 (CAPE %ile){_tip(_tip_cape)} {_cape_str} · {_cape_label}</div>
+                <div style="font-size:var(--mac-fs-sm);color:{_recov_color};margin-top:4px;font-weight:600">회복 신호 (ICSA){_tip(_tip_recov)} {_recov_str} · {_recov_label}</div>
                 </div>""", unsafe_allow_html=True)
         with b2:
             # V8 분모 가변 (봄/가을 11, 여름/겨울 9)
