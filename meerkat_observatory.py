@@ -7731,63 +7731,110 @@ tr:hover{{background:#263238}}
 
     # ── 카드 → 시리즈 매핑 (미니 시계열용). label 기준 자동 lookup ──
     # ("raw", key) = raw.jsonl 시리즈 / ("obs", key) = observations.jsonl 가공 지표
+    # 2026-04-29 미니시계열 전수 점검 — obs only 11일치 한계 우회 + CPI/PCE/GDP 라벨-그래프 일관성.
+    # ("calc", fn) — fn(raw_df) → pd.Series. raw 백필 (~수십년) 데이터로 즉시 계산.
+    def _yoy_pct(df, col):
+        if col not in df.columns: return pd.Series(dtype=float)
+        s = df[col].dropna()
+        if len(s) < 13: return pd.Series(dtype=float)
+        return ((s / s.shift(12) - 1) * 100).dropna()
+    def _qoq_annualized(df, col):
+        if col not in df.columns: return pd.Series(dtype=float)
+        s = df[col].dropna()
+        if len(s) < 2: return pd.Series(dtype=float)
+        return (((s / s.shift(1)) ** 4 - 1) * 100).dropna()
+    def _dd_52w(df, col):
+        if col not in df.columns: return pd.Series(dtype=float)
+        s = df[col].dropna()
+        if len(s) < 252: return pd.Series(dtype=float)
+        return ((s / s.rolling(252).max() - 1) * 100).dropna()
+    def _pct_chg(df, col, lookback):
+        if col not in df.columns: return pd.Series(dtype=float)
+        s = df[col].dropna()
+        if len(s) < lookback + 1: return pd.Series(dtype=float)
+        return ((s / s.shift(lookback) - 1) * 100).dropna()
+    def _abs_chg(df, col, lookback):
+        if col not in df.columns: return pd.Series(dtype=float)
+        s = df[col].dropna()
+        if len(s) < lookback + 1: return pd.Series(dtype=float)
+        return (s - s.shift(lookback)).dropna()
     _CARD_SERIES_MAP = {
-        # 미어캣 상황판
-        "QQQ DD":          ("obs", "qqq_dd_52w"),
-        "SOXX DD":         ("obs", "soxx_dd_52w"),
+        # 미어캣 상황판 — 52w drawdown
+        "QQQ DD":          ("calc", lambda df: _dd_52w(df, "QQQ")),
+        "SOXX DD":         ("calc", lambda df: _dd_52w(df, "SOXX")),
         # V3.4 핵심 5
         "VIX":             ("raw", "VIXCLS"),
-        "Fear & Greed":    ("obs", "fear_greed"),
+        "Fear & Greed":    ("obs", "fear_greed"),  # CNN API only
         "2Y-10Y 스프레드":  ("raw", "T10Y2Y"),
         "WTI 유가":         ("raw", "DCOILWTICO"),
         "원/달러":          ("raw", "DEXKOUS"),
         # 시장 온도 (심안)
-        "Forward PE":      ("obs", "forward_pe"),
+        "Forward PE":      ("obs", "forward_pe"),  # multpl 외부 only
         "DXY":             ("raw", "DX-Y.NYB"),
         "연방기금금리":     ("raw", "FEDFUNDS"),
         "하이일드 스프레드": ("raw", "BAMLH0A0HYM2"),
-        # 시장/실물
-        "SOX/SPX":         ("obs", "sox_rel3"),
+        # 시장/실물 — SOX/SPX 3M 상대수익률
+        "SOX/SPX":         ("calc", lambda df: (_pct_chg(df, "SOXX", 63) - _pct_chg(df, "^GSPC", 63)).dropna()),
         "실업률":           ("raw", "UNRATE"),
         # 채권/금리 심화
         "3M-10Y 스프레드":  ("raw", "T10Y3M"),
-        "3M-2Y 스프레드":   ("raw", "T10Y3M"),  # raw 에 DGS3MO 백필 누락 → 차선책으로 T10Y3M 시계열 (관련 시리즈)
-        "실질금리":         ("obs", "real_rate"),
-        "FF 6M 변화":       ("obs", "ff6m_chg"),
-        # 인플레 4종 (level)
-        "CPI YoY":         ("raw", "CPIAUCSL"),
-        "CPI 코어 YoY":    ("raw", "CPILFESL"),
-        "PCE YoY":         ("raw", "PCEPI"),
-        "PCE 코어 YoY":    ("raw", "PCEPILFE"),
+        # 3M-2Y: DGS3MO 백필 누락 → T10Y3M - T10Y2Y 합성 (= -(3M-2Y), 부호 반대지만 정확. 카드 라벨 부합 위해 부호 반전)
+        "3M-2Y 스프레드":   ("calc", lambda df: (
+            (df["T10Y3M"] - df["T10Y2Y"]).dropna()
+            if ("T10Y3M" in df.columns and "T10Y2Y" in df.columns) else pd.Series(dtype=float)
+        )),
+        # 실질금리 = FEDFUNDS - CPI YoY (둘 다 월간)
+        "실질금리":         ("calc", lambda df: (
+            (df["FEDFUNDS"].dropna() - _yoy_pct(df, "CPIAUCSL").reindex(df["FEDFUNDS"].dropna().index, method="nearest")).dropna()
+            if ("FEDFUNDS" in df.columns and "CPIAUCSL" in df.columns) else pd.Series(dtype=float)
+        )),
+        "FF 6M 변화":       ("calc", lambda df: _abs_chg(df, "FEDFUNDS", 6)),
+        # 인플레 4종 — YoY % (헤드라인과 일치)
+        "CPI YoY":         ("calc", lambda df: _yoy_pct(df, "CPIAUCSL")),
+        "CPI 코어 YoY":    ("calc", lambda df: _yoy_pct(df, "CPILFESL")),
+        "PCE YoY":         ("calc", lambda df: _yoy_pct(df, "PCEPI")),
+        "PCE 코어 YoY":    ("calc", lambda df: _yoy_pct(df, "PCEPILFE")),
         # 고용/경기
         "JOLTS":           ("raw", "JTSJOL"),
         "NFP":             ("raw", "PAYEMS"),
-        "GDP 성장률":       ("raw", "GDP"),
+        "GDP 성장률":       ("raw", "GDP"),  # raw_df "GDP" 컬럼 = FRED A191RL1Q225SBEA = 실질 GDP 성장률 (연율화 %)
         "소비자신뢰":       ("raw", "UMCSENT"),
-        "CFNAI MA3":       ("obs", "cfnai_ma3"),
+        "CFNAI MA3":       ("calc", lambda df: (
+            df["CFNAI"].dropna().rolling(3).mean().dropna()
+            if "CFNAI" in df.columns else pd.Series(dtype=float)
+        )),
         # 밸류에이션/구조
-        "Shiller CAPE":    ("obs", "cape"),
-        "Trailing PE":     ("obs", "trailing_pe"),
-        "배당수익률":       ("raw", "DIVIDEND_YIELD"),  # V3.10.5: SPY 배당수익률 풀히스토리 (백필 시)
+        "Shiller CAPE":    ("obs", "cape"),  # multpl 외부 only
+        "Trailing PE":     ("obs", "trailing_pe"),  # multpl 외부 only
+        "배당수익률":       ("raw", "DIVIDEND_YIELD"),
         "BEI 5Y":          ("raw", "T5YIE"),
+        # 버핏 지표 — raw.jsonl 에 명목 GDP 백필 없음 (raw_df "GDP" 는 실질 성장률 %).
+        # obs 만 사용 (~11일치 한계). 향후 nominal GDP 백필 추가 시 calc 로 이동 가능.
         "버핏 지표":        ("obs", "buffett_ratio"),
         # 구조/기타
         "카드 연체율":      ("raw", "DRCCLACBS"),
         "국채/GDP":         ("raw", "GFDEGDQ188S"),
         "Gold":            ("raw", "GC=F"),
-        "실업률 3M 변화":   ("obs", "un3m_chg"),
-        # 섹터 로테이션
-        "XLE-SPY 3M":      ("obs", "xle_spy_3m"),
-        "XLK-SPY 3M":      ("obs", "xlk_spy_3m"),
-        "섹터 로테이션":     ("obs", "xlk_spy_3m"),  # 종합 카드 — XLK 가 더 시장 신호에 가까움
-        # 추세/사이클 (역전 자체 시계열 — recovery_pct 가 N/A 일 때도 raw 보임)
-        "2Y10Y 역전 해소":  ("raw", "T10Y2Y"),  # obs f1_2y10y_recovery_pct 0 non-null → raw 시계열 직접
-        "3M10Y 역전 해소":  ("obs", "f1_3m10y_recovery_pct"),
-        "FF금리 위치":      ("obs", "f3_ff_position"),
-        "인하 사이클":      ("obs", "f2_cum_cut_bp"),
-        "Forward EPS 추세": ("obs", "f6_eps_chg_30d"),
-        # V3.8.2 노동격차 + 공급충격 디커플링 — raw 시계열 즉시 계산 (obs 누적 대기 없음)
-        # ("calc", fn) — fn(raw_df) → pd.Series 반환
+        "실업률 3M 변화":   ("calc", lambda df: _abs_chg(df, "UNRATE", 3)),
+        # 섹터 로테이션 — 3M 상대수익률
+        "XLE-SPY 3M":      ("calc", lambda df: (_pct_chg(df, "XLE", 63) - _pct_chg(df, "SPY", 63)).dropna()),
+        "XLK-SPY 3M":      ("calc", lambda df: (_pct_chg(df, "XLK", 63) - _pct_chg(df, "SPY", 63)).dropna()),
+        "섹터 로테이션":     ("calc", lambda df: (_pct_chg(df, "XLK", 63) - _pct_chg(df, "SPY", 63)).dropna()),
+        # 추세/사이클 (역전 자체 시계열)
+        "2Y10Y 역전 해소":  ("raw", "T10Y2Y"),
+        "3M10Y 역전 해소":  ("raw", "T10Y3M"),
+        # FF금리 위치 = FEDFUNDS 직근 10년(120개월) percentile
+        "FF금리 위치":      ("calc", lambda df: (
+            (df["FEDFUNDS"].dropna().rolling(120, min_periods=24).rank(pct=True).dropna() * 100)
+            if "FEDFUNDS" in df.columns else pd.Series(dtype=float)
+        )),
+        # 인하 사이클: FEDFUNDS 직근 24개월 max 대비 차이 (bp). 음수 = 인하 진행
+        "인하 사이클":      ("calc", lambda df: (
+            ((df["FEDFUNDS"].dropna() - df["FEDFUNDS"].dropna().rolling(24, min_periods=6).max()) * 100).dropna()
+            if "FEDFUNDS" in df.columns else pd.Series(dtype=float)
+        )),
+        "Forward EPS 추세": ("obs", "f6_eps_chg_30d"),  # forward EPS 외부 합성
+        # 노동격차 + 공급충격 (V3.8.2 부터 calc)
         "노동격차 (구인-실업자)": ("calc", lambda df: (
             (df["JTSJOL"] - df["UNEMPLOY"]).dropna()
             if ("JTSJOL" in df.columns and "UNEMPLOY" in df.columns) else pd.Series(dtype=float)
