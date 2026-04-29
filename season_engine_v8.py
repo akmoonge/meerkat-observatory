@@ -520,19 +520,29 @@ def evaluate_v8_layer1(raw, offset, tpe_series=None, cfnai_series=None,
         scores[season] = float(sum(1 for k in keys if boxes[k] is True))
         n_evals[season] = sum(1 for k in keys if boxes[k] is not None)
 
-    # 동률 시 인접 계절 우선 (사이클 진행 방향): 겨울→봄→여름→가을→겨울
-    # 봄=겨울 → 봄, 여름=가을 → 가을, 봄=여름 → 여름, 가을=겨울 → 겨울
-    # 비인접 동률(봄=가을, 여름=겨울) 또는 3개 이상 동률은 사이클 후순위 fallback
+    # 동률 처리 (GT 80 검증 결과 기반, 2026-04-29 개정):
+    # 인접 동률 — 사이클 진행 방향 우선이 정답이지만, 봄=겨울만 예외:
+    #   봄=여름 → 여름 (다음 진행)
+    #   여름=가을 → 가을 (다음 진행)
+    #   가을=겨울 → 겨울 (다음 진행)
+    #   봄=겨울 → 겨울 (CHANGED) — 침체 한복판에서 회복 시그널 일부 점등 + 위기 진행 중. 위기 우선.
+    #     검증: 2008-03/10, 1990-12 — 봄=겨울 동률 3건 모두 GT=겨울 (이전 룰 모두 오답)
+    # 비인접 동률 — 회복 vs 정점 충돌:
+    #   봄=가을 → 봄 (NEW) — 회복 우세. 검증: 1985-09 GT=봄 1건
+    #   여름=겨울 → 겨울 (보수) — 거의 발생 안 함, fallback
+    # 3개 이상 동률 — cycle 후순위 fallback (3-way 4건 중 3건 정답)
     max_score = max(scores.values())
     candidates = [s for s in CYCLE if scores[s] == max_score]
     if len(candidates) == 2:
-        adjacency_winner = {
-            frozenset(("봄", "겨울")): "봄",
+        tiebreak = {
+            frozenset(("봄", "겨울")): "겨울",
             frozenset(("여름", "가을")): "가을",
             frozenset(("봄", "여름")): "여름",
             frozenset(("가을", "겨울")): "겨울",
+            frozenset(("봄", "가을")): "봄",
+            frozenset(("여름", "겨울")): "겨울",
         }
-        best = adjacency_winner.get(frozenset(candidates), candidates[-1])
+        best = tiebreak.get(frozenset(candidates), candidates[-1])
     else:
         best = candidates[-1]
 

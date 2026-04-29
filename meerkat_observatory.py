@@ -174,6 +174,29 @@ def _v8_prefix(season, v8_scores):
     return ""
 
 
+def _v8_resolve_best(scores):
+    """V8_SEASON_BOXES 카운트 scores → best season.
+    GT 80 검증 기반 동률 룰 (2026-04-29):
+      인접: 봄=여름→여름, 여름=가을→가을, 가을=겨울→겨울, 봄=겨울→겨울 (예외, 침체 진행 우선)
+      비인접: 봄=가을→봄, 여름=겨울→겨울
+      3개 이상: cycle 후순위 fallback
+    """
+    _SO = ["봄", "여름", "가을", "겨울"]
+    _max = max(scores.values())
+    cands = [s for s in _SO if scores[s] == _max]
+    if len(cands) == 2:
+        tiebreak = {
+            frozenset(("봄", "겨울")): "겨울",
+            frozenset(("여름", "가을")): "가을",
+            frozenset(("봄", "여름")): "여름",
+            frozenset(("가을", "겨울")): "겨울",
+            frozenset(("봄", "가을")): "봄",
+            frozenset(("여름", "겨울")): "겨울",
+        }
+        return tiebreak.get(frozenset(cands), cands[-1])
+    return cands[-1]
+
+
 def _v8_eval_at(offset):
     _v8_eval = V8L1.evaluate_v8_layer1(V651.M.raw_data, offset)
     _boxes = _v8_eval.get("boxes", {})
@@ -181,9 +204,7 @@ def _v8_eval_at(offset):
         _sn: sum(1 for _bid in V8_SEASON_BOXES[_sn] if _boxes.get(_bid) is True)
         for _sn in ("봄", "여름", "가을", "겨울")
     }
-    _SO = ["봄", "여름", "가을", "겨울"]
-    _max = max(_scores.values())
-    _best = next(s for s in reversed(_SO) if _scores[s] == _max)
+    _best = _v8_resolve_best(_scores)
     return _best, _scores, _boxes
 
 
