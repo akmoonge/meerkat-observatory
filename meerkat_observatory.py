@@ -897,41 +897,41 @@ _CARD_RANGES = {
 # ─── 채권 탭 장단기금리차 그래프 위 ⓘ 툴팁 (스프레드 3종 미어캣 톤) ───
 _SPREAD_HELP = {
     "2Y-10Y": (
-        "가장 많이 인용되는 스프레드다. 근데 이것만 보면 안 된다.\n\n"
+        "가장 많이 인용되는 스프레드다. 근데 이것만 보면 안 된다.<br><br>"
         "역전되면 경기침체가 온다. 예측이 아니라 원인이다. 장기금리가 단기금리보다 낮아지면 "
-        "은행 마진이 줄고, 대출이 줄고, 신용이 경색된다. 예측의 자기실현이다.\n\n"
+        "은행 마진이 줄고, 대출이 줄고, 신용이 경색된다. 예측의 자기실현이다.<br><br>"
         "봐야 할 것: 역전의 깊이보다 해소 속도가 중요하다. 역전이 깊어지는 건 긴축이 진행 중이라는 뜻이고, "
-        "해소가 시작되면 긴축의 끝이 보인다는 뜻이다.\n\n"
+        "해소가 시작되면 긴축의 끝이 보인다는 뜻이다.<br><br>"
         "82년 11월 역전 67bp — 40년 만의 최대. 그게 인플레 고점 근처였고 주가 저점 근처였다. "
-        "역전이 극에 이르면 오히려 사야 한다.\n\n"
+        "역전이 극에 이르면 오히려 사야 한다.<br><br>"
         "언제 보냐: 항상 본다. 가장 기본이다. 근데 이게 역전됐다고 바로 팔면 안 된다. "
         "역전은 12~18개월 선행한다. 성급하면 돈 잃는다."
     ),
     "3M-10Y": (
-        "내가 가장 신뢰하는 침체 예측 지표다. 3개월물과 10년물이 금리역전되고 침체 안 온 적 있나? 없다.\n\n"
+        "내가 가장 신뢰하는 침체 예측 지표다. 3개월물과 10년물이 금리역전되고 침체 안 온 적 있나? 없다.<br><br>"
         "2Y-10Y보다 이걸 더 봐야 하는 이유: 3개월물은 연준 기준금리에 거의 직결된다. "
         "시장 기대가 아니라 연준의 현재 행동이 반영된다. 10년물은 시장이 보는 미래다. "
-        "이 둘의 차이는 \"연준의 현재 행동과 시장이 보는 미래의 괴리\"다. "
-        "2년물은 시장 기대가 섞여서 노이즈가 있다.\n\n"
+        "이 둘의 차이는 ‘연준의 현재 행동과 시장이 보는 미래의 괴리’다. "
+        "2년물은 시장 기대가 섞여서 노이즈가 있다.<br><br>"
         "봐야 할 것: 역전 진입 시점과 해소 시점. 역전이 시작되면 시계가 돌아가기 시작한 거다. "
-        "해소가 시작되면 두 가지 중 하나다. 연준이 인하했거나(봄 또는 겨울), 장기금리가 올라갔거나(채권시장 붕괴).\n\n"
+        "해소가 시작되면 두 가지 중 하나다. 연준이 인하했거나(봄 또는 겨울), 장기금리가 올라갔거나(채권시장 붕괴).<br><br>"
         "3개월 변화(도함수)를 봐라. 3M에 +30bp 이상 개선이면 사이클 전환 신호다. "
-        "-30bp 이상 악화면 역전 가속이다. 수준이 아니라 속도에 반응하는 방정식이다.\n\n"
+        "-30bp 이상 악화면 역전 가속이다. 수준이 아니라 속도에 반응하는 방정식이다.<br><br>"
         "언제 보냐: 사이클 전환기에 가장 중요하다. 긴축 끝물, 인하 초입. "
         "이때 이 스프레드의 방향이 계절을 결정한다."
     ),
     "3M-2Y": (
-        "이건 연준이 얼마나 오버슈팅했는지 보는 지표다.\n\n"
+        "이건 연준이 얼마나 오버슈팅했는지 보는 지표다.<br><br>"
         "3개월물은 현재 기준금리. 2년물은 시장이 예상하는 향후 2년간 평균 금리. "
         "정상이면 2년물이 높다 — 금리가 더 오를 거라는 뜻이니까. "
-        "역전되면? 시장이 \"연준이 너무 올렸다, 앞으로 내린다\"고 말하는 거다.\n\n"
+        "역전되면? 시장이 ‘연준이 너무 올렸다, 앞으로 내린다’고 말하는 거다.<br><br>"
         "22년 11월 내가 봤을 때 3개월물과 2년물의 차이가 벌어지고 있었다. 이건 채권시장 참여자들이 "
-        "금리는 4.75 이상 올라가고 인플레는 2년 안엔 안 잡힌다고 말하는 거였다.\n\n"
+        "금리는 4.75 이상 올라가고 인플레는 2년 안엔 안 잡힌다고 말하는 거였다.<br><br>"
         "봐야 할 것: 이 스프레드가 역전에서 정상으로 돌아오는 순간. "
-        "시장이 \"연준의 다음 움직임은 인하\"라고 확신하기 시작했다는 뜻이다. "
-        "12월 FOMC에서 파월이 50bp를 할지 25bp를 할지 — 이 스프레드가 먼저 말해준다.\n\n"
+        "시장이 ‘연준의 다음 움직임은 인하’라고 확신하기 시작했다는 뜻이다. "
+        "12월 FOMC에서 파월이 50bp를 할지 25bp를 할지 — 이 스프레드가 먼저 말해준다.<br><br>"
         "2Y-10Y, 3M-10Y와 같이 봐야 한다. 세 스프레드가 동시에 역전이면 채권시장 전체가 침체를 확신하는 거다. "
-        "하나만 역전이면 아직 의견이 갈리는 거다.\n\n"
+        "하나만 역전이면 아직 의견이 갈리는 거다.<br><br>"
         "언제 보냐: FOMC 전후. 연준의 다음 행동을 채권시장이 어떻게 가격 매기는지 이게 가장 빨리 보여준다."
     ),
 }
@@ -9203,21 +9203,24 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
             if len(cm) > 0: sd_["3M-2Y"] = d3s.loc[cm] - d2s.loc[cm]
         if sd_:
             cl = {"2Y-10Y": C["blue"], "3M-10Y": C["orange"], "3M-2Y": C["purple"]}
-            # 그래프 위 ⓘ 툴팁 (스프레드 3종 미어캣 톤 — _SPREAD_HELP)
-            _legend_html_parts = []
-            for _spn in ("2Y-10Y", "3M-10Y", "3M-2Y"):
-                if _spn not in sd_: continue
-                _help = _SPREAD_HELP.get(_spn, "")
-                _legend_html_parts.append(
-                    f"<span style='color:{cl[_spn]};font-weight:700'>{_spn}</span>{_tip(_help)}"
-                )
-            if _legend_html_parts:
+            # 그래프 위 ⓘ 툴팁 (스프레드 3종 미어캣 톤) — 각 _tip 을 별도 column 으로 격리해
+            # st.markdown 한 호출 안에 nested HTML 이 markdown parser 에 의해 깨지는 문제 방지
+            _spread_tip_keys = [s for s in ("2Y-10Y", "3M-10Y", "3M-2Y") if s in sd_]
+            if _spread_tip_keys:
                 st.markdown(
-                    f"<div style='font-size:var(--mac-fs-sm);color:{C['muted']};margin:4px 0 6px'>"
-                    f"📊 스프레드 3종 (각 라벨 옆 ⓘ 호버 — 미어캣 해설): "
-                    + "  ·  ".join(_legend_html_parts)
-                    + "</div>", unsafe_allow_html=True,
+                    f"<div style='font-size:var(--mac-fs-sm);color:{C['muted']};margin:4px 0 2px'>"
+                    f"📊 스프레드 3종 (각 라벨 옆 ⓘ 호버 — 미어캣 해설)</div>",
+                    unsafe_allow_html=True,
                 )
+                _tip_cols = st.columns(len(_spread_tip_keys))
+                for _ti, _spn in enumerate(_spread_tip_keys):
+                    with _tip_cols[_ti]:
+                        st.markdown(
+                            f"<div style='font-size:var(--mac-fs-sm);font-weight:700;"
+                            f"color:{cl[_spn]};text-align:center'>"
+                            f"{_spn}{_tip(_SPREAD_HELP[_spn])}</div>",
+                            unsafe_allow_html=True,
+                        )
             _fig_bond = go.Figure()
             for n, s in sd_.items(): _fig_bond.add_trace(go.Scatter(x=s.index, y=s.values * 100, name=n, line=dict(color=cl.get(n, C["muted"]), width=1.5)))
             _fig_bond.add_hline(y=0, line_dash="dash", line_color=C["red"], opacity=0.5)
