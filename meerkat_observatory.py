@@ -208,6 +208,19 @@ def _v8_eval_at(offset):
     return _best, _scores, _boxes
 
 
+def _v8_apply_transition(curr_best, prev_30d_best, cape_20y_pct):
+    """방안 5 룰 B + CAPE 게이트 (2026-04-29 GT 80 검증):
+      박스 시스템에 '기억' 부재 → 직전 30일 best 전파해 사이클 순서 강제.
+      가을/겨울 → 여름 사이클 역행 시 봄 삽입 (얕은 침체 봄 detection).
+      CAPE 20y %ile < 50 게이트로 V자 반등 false 봄 차단.
+    """
+    if curr_best != "여름": return curr_best
+    if prev_30d_best not in ("겨울", "가을"): return curr_best
+    if cape_20y_pct is None: return curr_best
+    if cape_20y_pct >= 50: return curr_best
+    return "봄"
+
+
 def evaluate_v651_today(offset=0, hysteresis=True, hysteresis_margin=None):
     """V8.0 1층 (40박스) + 2층 (ANFCI + CAPE_pct) 평가 + 히스테리시스."""
     if hysteresis_margin is None:
@@ -248,6 +261,13 @@ def evaluate_v651_today(offset=0, hysteresis=True, hysteresis_margin=None):
         _v8_layer2 = V8L2.compute_layer2(V651.M.raw_data, offset)
     except Exception:
         _v8_layer2 = {}
+    # 방안 5 룰 B + CAPE 게이트: 사이클 역행 (가을/겨울 → 여름) 봄 삽입
+    try:
+        _prev_30d_best, _, _ = _v8_eval_at(offset + 30)
+        _cape_pct_now = _v8_layer2.get("cape_pct") if _v8_layer2 else None
+        season = _v8_apply_transition(season, _prev_30d_best, _cape_pct_now)
+    except Exception:
+        pass
     prefix = _v8_prefix(season, _v8_scores)
     # V8 confidence — best ≤ 4 → "판정 불가" (명세) / 그 외 비율 기반
     _top_total = len(V8_SEASON_BOXES.get(season, [])) or 1
