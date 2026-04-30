@@ -9815,41 +9815,6 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
                 </div>
                 {_cycle_html}{_unmatched_html}</div>""", unsafe_allow_html=True)
 
-            # ─── 1위 era × 5클러스터 매트릭스 (deep mode only, 추정값) ───
-            _m1_cluster_est = _m1.get("cluster_estimate")
-            if deep and _m1_cluster_est and export_mac_clusters:
-                _matrix_rows = []
-                for _cn in ("채권/금리", "밸류에이션", "스트레스", "실물", "반도체"):
-                    _cur = (export_mac_clusters.get(_cn) or {}).get("score")
-                    _est = _m1_cluster_est.get(_cn)
-                    if _cur is None or _est is None: continue
-                    _gap = _cur - _est
-                    _gap_color = C["green"] if abs(_gap) < 8 else (C["gold"] if abs(_gap) < 15 else C["red"])
-                    _gap_str = f"{_gap:+.1f}"
-                    _matrix_rows.append(
-                        f"<tr><td style='padding:4px 8px;color:{_t2}'>{_cn}</td>"
-                        f"<td style='padding:4px 8px;color:{_t2};text-align:right;font-weight:600'>{_cur:.1f}</td>"
-                        f"<td style='padding:4px 8px;color:{_m2};text-align:right'>{_est:.1f}</td>"
-                        f"<td style='padding:4px 8px;color:{_gap_color};text-align:right;font-weight:600'>{_gap_str}</td></tr>"
-                    )
-                if _matrix_rows:
-                    _table_html = (
-                        f"<div class='maccard' style='background:{_cd2};border:1px solid {_bd2};border-radius:8px;"
-                        f"padding:12px 16px;margin-top:10px;border-left:3px solid {C['purple']}'>"
-                        f"<div style='font-size:var(--mac-fs-sm);color:{C['bright']};font-weight:700;margin-bottom:6px'>"
-                        f"📐 {_m1.get('label','—')} 와 현재 5클러스터 격차 <span style='color:{_m2};font-weight:400'>(추정)</span></div>"
-                        f"<table style='width:100%;font-size:var(--mac-fs-sm);border-collapse:collapse'>"
-                        f"<thead><tr style='border-bottom:1px solid {_bd2}'>"
-                        f"<th style='text-align:left;padding:4px 8px;color:{_m2};font-weight:600'>클러스터</th>"
-                        f"<th style='text-align:right;padding:4px 8px;color:{_m2};font-weight:600'>현재</th>"
-                        f"<th style='text-align:right;padding:4px 8px;color:{_m2};font-weight:600'>1위 era 추정</th>"
-                        f"<th style='text-align:right;padding:4px 8px;color:{_m2};font-weight:600'>격차</th></tr></thead>"
-                        f"<tbody>" + "".join(_matrix_rows) + "</tbody></table>"
-                        f"<div style='font-size:var(--mac-fs-xs);color:{_m2};margin-top:6px'>"
-                        f"※ era 추정 점수는 enum 차원 (valuation/credit 등) 기반 자동 변환. 실측 X.</div></div>"
-                    )
-                    st.markdown(_table_html, unsafe_allow_html=True)
-
             # ─── 2위 / 3위 요약 ───
             for _idx, _m in enumerate(_hm_matches[1:3], start=2):
                 _medal_i = _medals[_idx-1]
