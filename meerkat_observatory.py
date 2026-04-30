@@ -6327,14 +6327,19 @@ def main():
                 _DAILY_FLAG.write_text(datetime.now().isoformat(), "utf-8")
             else:
                 _DAILY_FLAG.unlink(missing_ok=True)
-        except Exception: pass
+        except Exception as _e:
+            st.sidebar.caption(f"⚠️ flag 처리 실패: {type(_e).__name__}")
+        st.rerun()
     if _daily_on_new and _DAILY_LAST.exists():
         try:
             _last_ts = float(_DAILY_LAST.read_text("utf-8").strip())
-            _hours_ago = (datetime.now().timestamp() - _last_ts) / 3600
-            if _hours_ago < 48:
-                st.sidebar.caption(f"↳ 직전 자동 실행: {_hours_ago:.1f}h 전")
-        except Exception: pass
+            _last_dt = datetime.fromtimestamp(_last_ts)
+            _hours_ago = (datetime.now() - _last_dt).total_seconds() / 3600
+            st.sidebar.caption(f"   └ 마지막 실행: {_last_dt.strftime('%m-%d %H:%M')} ({_hours_ago:.1f}h 전)")
+        except Exception:
+            st.sidebar.caption("   └ 마지막 실행: 기록 없음")
+    elif _daily_on_new:
+        st.sidebar.caption("   └ 마지막 실행: 아직 없음")
     # ── 자가 업데이트 (GitHub raw, git 불필요) ──
     if st.sidebar.button("⬇️ 업데이트 (GitHub)", use_container_width=True, help="GitHub 에서 최신 버전 다운로드. git 불필요."):
         with st.spinner("최신 버전 확인 중..."):
