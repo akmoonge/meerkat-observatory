@@ -9275,11 +9275,17 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
         easy_help(mode, HELP_TAB1)
         st.subheader(bsl("📈 채권이 형이다", mode))
         st.caption("형의 걱정은 동생의 미래다.")
+        # 그래프 3종 모두 fd 딕셔너리 (DGS10/DGS2/DGS3MO=DTB3 매핑) 기반 코드 계산.
+        # 메트릭 (3개월/2년/10년) 도 fd 동일 시리즈 → 그래프와 메트릭 일관성 보장.
+        # FRED T10Y2Y/T10Y3M 직접 시리즈는 갱신 시점 다름 + DGS3MO 기반이라 메트릭(DTB3)과 불일치.
         sd_ = {}
-        for k, fk in [("2Y-10Y", "T10Y2Y"), ("3M-10Y", "T10Y3M")]:
-            s = fd.get(fk)
-            if s is not None and len(s) > 0: sd_[k] = s
-        d3s = fd.get("DGS3MO"); d2s = fd.get("DGS2")
+        d10s = fd.get("DGS10"); d2s = fd.get("DGS2"); d3s = fd.get("DGS3MO")
+        if d10s is not None and d2s is not None and len(d10s) > 0 and len(d2s) > 0:
+            cm = d10s.index.intersection(d2s.index)
+            if len(cm) > 0: sd_["2Y-10Y"] = d10s.loc[cm] - d2s.loc[cm]
+        if d10s is not None and d3s is not None and len(d10s) > 0 and len(d3s) > 0:
+            cm = d10s.index.intersection(d3s.index)
+            if len(cm) > 0: sd_["3M-10Y"] = d10s.loc[cm] - d3s.loc[cm]
         if d3s is not None and d2s is not None and len(d3s) > 0 and len(d2s) > 0:
             cm = d3s.index.intersection(d2s.index)
             if len(cm) > 0: sd_["3M-2Y"] = d3s.loc[cm] - d2s.loc[cm]
