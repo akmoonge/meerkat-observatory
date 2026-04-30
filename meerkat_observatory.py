@@ -7521,8 +7521,16 @@ def main():
     # 계절 체크리스트 상세 (16개 항목)
     # numpy.bool_ → Python bool 강제 변환 (JSON 인코더 호환)
     export_season_checks = {sn: [(lbl, bool(v)) for lbl, v in items] for sn, items in season_checks.items()}
+    # JSON 부조화 방지 — 라벨 결정 과정 분리 명시.
+    # 동률 (여름=가을 4=4) 시 raw_best=가을 + 히스테리시스 직전 라벨=여름 유지 → label="늦여름" 가능.
+    # 점수 동률인데 라벨 "늦여름" 으로 보이는 부조화 추적 위해 raw_best/base/prefix/hysteresis 분리 export.
+    _v8_diag = v651_today or {}
     export_season_d = {
         "date": _now_str, "계절": season_auto, "확신도": season_conf, "계절_점수": season_scores,
+        "계절_원형_raw_best": _v8_diag.get("raw_season"),     # tiebreak 직후 (히스테리시스/전이 전)
+        "계절_base_after_hyst": _v8_diag.get("base"),         # 히스테리시스 + 전이 적용 후 base
+        "계절_접두사": _v8_diag.get("prefix", ""),             # prefix (초/늦/없음)
+        "히스테리시스_적용": _v8_diag.get("hysteresis_held", False),
         "계절_체크리스트": export_season_checks,
         "계절_박스_총수": 9,
         "계절_박스_구조": "공통 5 + 고유 4",
