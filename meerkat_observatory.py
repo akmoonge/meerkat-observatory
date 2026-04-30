@@ -6310,6 +6310,31 @@ def main():
         try: fyf_batch.clear()
         except Exception: pass
         st.rerun()
+    # ─ 일일 자동 스냅샷 토글 (작업 스케줄러 + daily_snapshot.py 연동) ─
+    _DAILY_FLAG = SD / "daily_snapshot.flag"
+    _DAILY_LAST = SD / "daily_snapshot.last_run"
+    _daily_on_now = _DAILY_FLAG.exists()
+    _daily_on_new = st.sidebar.checkbox(
+        "📅 일일 자동 스냅샷",
+        value=_daily_on_now,
+        help="작업 스케줄러가 매일 09:00 daily_snapshot.py 실행 시 이 토글 ON 이면 기록 누적. "
+             "OFF 면 스크립트 실행돼도 즉시 종료.",
+    )
+    if _daily_on_new != _daily_on_now:
+        try:
+            if _daily_on_new:
+                SD.mkdir(parents=True, exist_ok=True)
+                _DAILY_FLAG.write_text(datetime.now().isoformat(), "utf-8")
+            else:
+                _DAILY_FLAG.unlink(missing_ok=True)
+        except Exception: pass
+    if _daily_on_new and _DAILY_LAST.exists():
+        try:
+            _last_ts = float(_DAILY_LAST.read_text("utf-8").strip())
+            _hours_ago = (datetime.now().timestamp() - _last_ts) / 3600
+            if _hours_ago < 48:
+                st.sidebar.caption(f"↳ 직전 자동 실행: {_hours_ago:.1f}h 전")
+        except Exception: pass
     # ── 자가 업데이트 (GitHub raw, git 불필요) ──
     if st.sidebar.button("⬇️ 업데이트 (GitHub)", use_container_width=True, help="GitHub 에서 최신 버전 다운로드. git 불필요."):
         with st.spinner("최신 버전 확인 중..."):
