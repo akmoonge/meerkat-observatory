@@ -174,10 +174,48 @@ def _v8_prefix(season, v8_scores):
     return ""
 
 
-def _v8_resolve_best(scores):
+def _v8_crisis_history_365d(offset):
+    """직전 365일 안에 VIX>30 / 실업 3M+50bp+ / HY>5% 이력. 방안 4 path-dependent tiebreaker 보조."""
+    raw = V651.M.raw_data if (V651.M.raw_data is not None) else None
+    if raw is None: return False
+    LOOKBACK = 365
+    try:
+        vix = raw.get("vix_s")
+        if vix is not None and len(vix) > 0:
+            ref = vix.index[-1] - pd.Timedelta(days=offset)
+            ws = ref - pd.Timedelta(days=LOOKBACK)
+            w = vix[(vix.index >= ws) & (vix.index <= ref)].dropna()
+            if len(w) > 0 and float(w.max()) > 30: return True
+    except Exception: pass
+    try:
+        unrate = raw.get("unrate_s")
+        if unrate is not None and len(unrate) > 0:
+            ref = unrate.index[-1] - pd.Timedelta(days=offset)
+            ws = ref - pd.Timedelta(days=LOOKBACK + 90)
+            w = unrate[(unrate.index >= ws) & (unrate.index <= ref)].dropna()
+            if len(w) >= 4:
+                d = w.diff(periods=3).dropna()
+                if len(d) > 0 and float(d.max()) > 0.5: return True
+    except Exception: pass
+    try:
+        hy = raw.get("hy_s")
+        if hy is not None and len(hy) > 0:
+            ref = hy.index[-1] - pd.Timedelta(days=offset)
+            ws = ref - pd.Timedelta(days=LOOKBACK)
+            w = hy[(hy.index >= ws) & (hy.index <= ref)].dropna()
+            if len(w) > 0:
+                m = float(w.max())
+                if m <= 1.0: m *= 100
+                if m > 5: return True
+    except Exception: pass
+    return False
+
+
+def _v8_resolve_best(scores, offset=None):
     """V8_SEASON_BOXES 카운트 scores → best season.
-    GT 80 검증 기반 동률 룰 (2026-04-29):
-      인접: 봄=여름→여름, 여름=가을→가을, 가을=겨울→겨울, 봄=겨울→겨울 (예외, 침체 진행 우선)
+    GT 80 검증 기반 동률 룰 (2026-04-29 + 방안 4 path-dependent):
+      인접: 봄=여름→여름, 여름=가을→가을, 가을=겨울→겨울, 봄=겨울→겨울 (침체 진행 우선)
+      예외 — 봄=여름 동률 + 직전 365d 위기 이력 → 봄 (회복 중)
       비인접: 봄=가을→봄, 여름=겨울→겨울
       3개 이상: cycle 후순위 fallback
     """
@@ -185,6 +223,10 @@ def _v8_resolve_best(scores):
     _max = max(scores.values())
     cands = [s for s in _SO if scores[s] == _max]
     if len(cands) == 2:
+        if frozenset(cands) == frozenset(("봄", "여름")) and offset is not None:
+            try:
+                if _v8_crisis_history_365d(offset): return "봄"
+            except Exception: pass
         tiebreak = {
             frozenset(("봄", "겨울")): "겨울",
             frozenset(("여름", "가을")): "가을",
@@ -204,7 +246,7 @@ def _v8_eval_at(offset):
         _sn: sum(1 for _bid in V8_SEASON_BOXES[_sn] if _boxes.get(_bid) is True)
         for _sn in ("봄", "여름", "가을", "겨울")
     }
-    _best = _v8_resolve_best(_scores)
+    _best = _v8_resolve_best(_scores, offset=offset)
     return _best, _scores, _boxes
 
 
