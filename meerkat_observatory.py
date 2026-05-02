@@ -3632,9 +3632,9 @@ assert len(ERA_LIBRARY) == 32, f"ERA_LIBRARY 항목 수 불일치: {len(ERA_LIBR
 
 ERA_DIM_WEIGHTS = {
     "season": 3, "ff_pos": 2, "ff_action": 2,
-    "inflation_trend": 2, "valuation": 2, "cape_pct_band": 1, "credit": 2,
+    "inflation_trend": 2, "valuation": 3, "cape_pct_band": 1, "credit": 2,
     "yield_curve": 2, "semiconductor": 1, "dollar": 1, "external_shock": 2,
-}  # weight 합 = 21 (V3.10.6: valuation 3→2 + cape_pct_band 1 추가)
+}  # weight 합 = 21 (V3.10.6: cape_pct_band 1 신규 추가, valuation 3 유지)
 ERA_MATCH_THRESHOLD = 0.55
 
 
