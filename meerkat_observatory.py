@@ -4656,8 +4656,10 @@ def _build_long_range_raw(api_key, start="1990-01-01"):
             except Exception:
                 out["fpe_s"] = _fpe_hist
         # STEP 5-3: trailing earnings 시계열 (te / eg)
+        # V3.10.6: historical_loader의 _resolve_path 폴백 사용 (사용자 캐시 부재 시 repo 번들)
         try:
-            _te_path = SD / "cache" / "trailing_earnings_history.json"
+            from historical_loader import TRAILING_EARN_HISTORY as _TEH, _resolve_path as _rp
+            _te_path = _rp(_TEH)
             if _te_path.exists():
                 with open(_te_path, "r", encoding="utf-8") as _f:
                     _te_obj = json.load(_f)
