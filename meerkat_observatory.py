@@ -465,21 +465,25 @@ def _check_update_available():
         return False
 
 def _self_update():
-    """GitHub raw 에서 최신 파일을 직접 가져와 덮어쓴다 (git 불필요).
-    md5 비교 후 변경된 파일만 저장. (updated_list, failed_list) 반환.
+    """GitHub raw 에서 repo 전체를 동기화 (git 불필요).
+    1) GitHub API 로 main 브랜치 전체 파일 트리 조회 (재귀)
+    2) 각 파일을 raw 로 받아 로컬과 md5 비교 → 변경분만 저장
+    3) 로컬에 없는 신규 파일도 자동으로 받아옴
+    (updated_list, failed_list) 반환.
     """
-    import urllib.request, hashlib
+    import urllib.request, hashlib, json as _json
     APP_DIR = Path(__file__).parent
-    targets = [
-        "meerkat_observatory.py", "meerkat_observatory.bat", "install.bat",
-        # 엔진 모듈 — main 파일 변경 시 함께 변경되는 경우 많아 동시 동기화 필수
-        "season_engine_core.py", "season_engine_v69.py",
-        "season_engine_v8.py", "season_engine_v8_helpers.py",
-        "season_engine_vulnerability.py",
-        "historical_loader.py", "short_term_alerts.py",
-    ]
     updated, failed = [], []
-    for fn in targets:
+    # Step 1: repo 트리 조회
+    try:
+        api_url = "https://api.github.com/repos/akmoonge/meerkat-observatory/git/trees/main?recursive=1"
+        req = urllib.request.Request(api_url, headers={"User-Agent": "meerkat-observatory-updater"})
+        tree = _json.loads(urllib.request.urlopen(req, timeout=15).read())
+    except Exception as e:
+        return [], [f"repo tree fetch FAIL: {type(e).__name__}: {str(e)[:120]}"]
+    files = [item["path"] for item in tree.get("tree", []) if item.get("type") == "blob"]
+    # Step 2: 각 파일 동기화
+    for fn in files:
         try:
             req = urllib.request.Request(f"{REPO_RAW_BASE}/{fn}", headers={"User-Agent": "meerkat-observatory-updater"})
             new_bytes = urllib.request.urlopen(req, timeout=15).read()
@@ -487,6 +491,7 @@ def _self_update():
             if local.exists():
                 if hashlib.md5(local.read_bytes()).hexdigest() == hashlib.md5(new_bytes).hexdigest():
                     continue
+            local.parent.mkdir(parents=True, exist_ok=True)  # 중첩 폴더 안전
             local.write_bytes(new_bytes)
             updated.append(fn)
         except Exception as e:
