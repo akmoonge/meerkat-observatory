@@ -20,15 +20,31 @@ HY_OAS_HISTORY = SD / "cache" / "hy_oas_history.json"  # STEP A-2 적재됨 (Way
 FORWARD_PE = SD / "cache" / "forward_pe.json"  # STEP 5-8 라이브 누적 적재 (앱 실행마다 1 entry)
 FORWARD_PE_STALE_DAYS = 14  # 14일 초과 시 stale → trailing fallback
 
+# Repo-bundled fallback (신규 사용자 / ~/.meerkat 캐시 부재 시)
+_BUNDLED_DIR = Path(__file__).parent / "data"
+_BUNDLED_FALLBACK = {
+    CAPE_HISTORY: _BUNDLED_DIR / "cape_history.json",
+    HY_OAS_HISTORY: _BUNDLED_DIR / "hy_oas_history.json",
+    TRAILING_EARN_HISTORY: _BUNDLED_DIR / "trailing_earnings_history.json",
+}
+
+def _resolve_path(user_path):
+    """user 캐시 우선. 부재 시 repo 번들 폴백."""
+    if user_path.exists(): return user_path
+    fb = _BUNDLED_FALLBACK.get(user_path)
+    if fb is not None and fb.exists(): return fb
+    return user_path  # 둘 다 없으면 user_path 반환 (caller에서 .exists() False 분기)
+
 
 @lru_cache(maxsize=1)
 def load_cape_history():
     """CAPE 일별 시계열 (1990-01-01 ~ 현재 forward-filled).
     반환: pandas.Series (DatetimeIndex), 또는 빈 Series."""
     import pandas as pd
-    if not CAPE_HISTORY.exists(): return pd.Series(dtype=float)
+    _path = _resolve_path(CAPE_HISTORY)
+    if not _path.exists(): return pd.Series(dtype=float)
     try:
-        with open(CAPE_HISTORY, "r", encoding="utf-8") as f:
+        with open(_path, "r", encoding="utf-8") as f:
             obj = json.load(f)
         records = obj.get("data") or []
         if not records: return pd.Series(dtype=float)
@@ -54,9 +70,10 @@ def get_cape_at(target_date):
 
 def cape_meta():
     """CAPE JSON 메타데이터."""
-    if not CAPE_HISTORY.exists(): return {}
+    _path = _resolve_path(CAPE_HISTORY)
+    if not _path.exists(): return {}
     try:
-        with open(CAPE_HISTORY, "r", encoding="utf-8") as f:
+        with open(_path, "r", encoding="utf-8") as f:
             obj = json.load(f)
         return {k: v for k, v in obj.items() if k != "data"}
     except Exception: return {}
@@ -69,9 +86,10 @@ def load_hy_oas_history():
     소스: Wayback fredgraph.csv (정책 변경 직전 archive) + FRED 현재 fetch.
     반환: pandas.Series (DatetimeIndex), 단위 = % (BAMLH0A0HYM2 와 동일)."""
     import pandas as pd
-    if not HY_OAS_HISTORY.exists(): return pd.Series(dtype=float)
+    _path = _resolve_path(HY_OAS_HISTORY)
+    if not _path.exists(): return pd.Series(dtype=float)
     try:
-        with open(HY_OAS_HISTORY, "r", encoding="utf-8") as f:
+        with open(_path, "r", encoding="utf-8") as f:
             obj = json.load(f)
         records = obj.get("data") or []
         if not records: return pd.Series(dtype=float)
@@ -116,9 +134,10 @@ def get_hy_oas_1m_chg(target_date):
 
 def hy_oas_meta():
     """HY OAS JSON 메타데이터."""
-    if not HY_OAS_HISTORY.exists(): return {}
+    _path = _resolve_path(HY_OAS_HISTORY)
+    if not _path.exists(): return {}
     try:
-        with open(HY_OAS_HISTORY, "r", encoding="utf-8") as f:
+        with open(_path, "r", encoding="utf-8") as f:
             obj = json.load(f)
         return {k: v for k, v in obj.items() if k != "data"}
     except Exception: return {}
@@ -265,9 +284,10 @@ def load_historical_fundamentals(target_date):
     fpe_source = "forward" if fpe is not None else "trailing_fallback"
     # te / eg from trailing_earnings_history
     te = eg = te_3m = None
-    if TRAILING_EARN_HISTORY.exists():
+    _te_path = _resolve_path(TRAILING_EARN_HISTORY)
+    if _te_path.exists():
         try:
-            with open(TRAILING_EARN_HISTORY, "r", encoding="utf-8") as f:
+            with open(_te_path, "r", encoding="utf-8") as f:
                 obj = json.load(f)
             df = pd.DataFrame(obj.get("data") or [])
             if len(df):
