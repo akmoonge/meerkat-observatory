@@ -6912,6 +6912,12 @@ def main():
         fpe_z=_fpe_z_in, fpe_3m_chg=_fpe_3mchg_in,
     )
 
+    # ═══ V8.0 1층 (40박스) + 2층 (ANFCI + CAPE) 평가 ═══
+    try:
+        v651_today = evaluate_v651_today(offset=0)
+    except Exception:
+        v651_today = None
+
     # ── Export 데이터 (탭별 + 전체) ──
     _now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
     _r2 = lambda v, d=2: round(v, d) if v is not None else None
