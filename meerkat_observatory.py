@@ -2979,8 +2979,8 @@ def mac_velocity_label(v, mode="일반"):
 def _build_current_state(season, ff_pos, val_score, semi_dir,
                          wti_3m, hy_now, hy_6m_chg, inv_state,
                          dxy_now, cpi_yoy_now, cpi_yoy_3m_chg,
-                         ff_3m_chg, ff_6m_chg):
-    """현재 매크로 상태 → 10차원 enum dict."""
+                         ff_3m_chg, ff_6m_chg, cape_pct=None):
+    """현재 매크로 상태 → 11차원 enum dict (V3.10.6: cape_pct_band 추가)."""
     ffp = None
     if ff_pos == "저점권":   ffp = "low"
     elif ff_pos == "중립권": ffp = "mid"
@@ -3051,12 +3051,22 @@ def _build_current_state(season, ff_pos, val_score, semi_dir,
     else:
         sh = "none"
 
+    # V3.10.6: cape_pct_band — V8 2층의 cape_pct (Shiller 20Y 롤링 %ile) 5밴드 매핑.
+    # 90/75/50/25 임계 — 통계적 분위 기반 (절대값 아닌 시대적 컨텍스트 우선).
+    if cape_pct is None:    cpb = None
+    elif cape_pct >= 90:    cpb = "extreme"
+    elif cape_pct >= 75:    cpb = "high"
+    elif cape_pct >= 50:    cpb = "mid"
+    elif cape_pct >= 25:    cpb = "normal"
+    else:                    cpb = "low"
+
     return {
         "season":           season,
         "ff_pos":           ffp,
         "ff_action":        ffa,
         "inflation_trend":  infl,
         "valuation":        val,
+        "cape_pct_band":    cpb,
         "credit":           cred,
         "yield_curve":      yc,
         "semiconductor":    semi,
@@ -3075,6 +3085,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "extreme",
         "credit": "tight", "yield_curve": "normal",
         "semiconductor": "up", "dollar": "strong", "external_shock": "none",
+        "cape_pct_band": "extreme",
         "comment": "거품의 마지막 여름. 빚으로 산 마지막 광기.\n실적이 따라온다는 건 거품 마지막 단계에서도 사실이다.",
         "quote": "거품 정점에선 매매를 멈춰라. 욕심이 잉태한즉 죄를 낳는다.",
         "aftermath": "1929~32 다우 -89%. 회복에 25년 걸렸다.",
@@ -3091,6 +3102,7 @@ ERA_LIBRARY = [
         "inflation_trend": "cooling", "valuation": "low",
         "credit": "panic", "yield_curve": "normal",
         "semiconductor": "up", "dollar": "weak", "external_shock": "none",
+        "cape_pct_band": "normal",
         "comment": "다우 -89% 후 바닥. 모두가 절망했을 때.\n역실적장세에선 매수가 정석이다.",
         "quote": "악재가 다 나왔다. 그러니 지금부턴 사고 호재를 기다리자.",
         "aftermath": "1932~37 다우 4배. 5년 강세장 시작.",
@@ -3107,6 +3119,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "normal",
         "credit": "widening", "yield_curve": "normal",
         "semiconductor": "flat", "dollar": "strong", "external_shock": "financial",
+        "cape_pct_band": "mid",
         "comment": "32년 바닥 후 회복하던 경제가 37년 재차 폭락.\n연준의 너무 이른 긴축이 만든 두 번째 침체다.",
         "quote": "긴축은 너희들이 주식을 사고 싶지 않을 때까지 계속하는 거다. 멈추면 안 된다.",
         "aftermath": "1937~38 다우 -49%. 침체 18개월.",
@@ -3124,6 +3137,7 @@ ERA_LIBRARY = [
         "inflation_trend": "accelerating", "valuation": "high",
         "credit": "normal", "yield_curve": "normal",
         "semiconductor": "flat", "dollar": "weak", "external_shock": "none",
+        "cape_pct_band": "mid",
         "comment": "닉슨 쇼크 직후. 달러 신뢰가 무너지고 인플레가 출발.\n70년대 스태그플레이션의 시작.",
         "quote": "환전해서 원화 챙겨라. 통화 신뢰가 흔들릴 땐 미국 주식 사지마라.",
         "aftermath": "73~74년 1차 오일쇼크로 진짜 침체 진입.",
@@ -3140,6 +3154,7 @@ ERA_LIBRARY = [
         "inflation_trend": "accelerating", "valuation": "normal",
         "credit": "widening", "yield_curve": "inverted",
         "semiconductor": "down", "dollar": "weak", "external_shock": "geopolitical",
+        "cape_pct_band": "low",
         "comment": "공급충격 가을. 욤키푸르 전쟁과 OPEC 금수조치.\n유가가 인플레를 밀고 인플레가 시장을 민다.",
         "quote": "유가→인플레→연준→시장. 8차선 도로를 무단횡단하는 것과 같다.",
         "aftermath": "73~74년 다우 -45%. 21개월 베어마켓.",
@@ -3156,6 +3171,7 @@ ERA_LIBRARY = [
         "inflation_trend": "peaking", "valuation": "low",
         "credit": "widening", "yield_curve": "recovering",
         "semiconductor": "down", "dollar": "weak", "external_shock": "geopolitical",
+        "cape_pct_band": "low",
         "comment": "오일쇼크 + 닉슨 사임 + 워터게이트. 다우 -45% 후 바닥.\n인플레 정점과 주가 저점은 같이 온다.",
         "quote": "장단기금리역전의 고점은 인플레의 고점 근처이고 주가의 저점 근처다.",
         "aftermath": "74~76년 다우 75% 회복. 그러나 70년대 박스권은 끝나지 않았다.",
@@ -3172,6 +3188,7 @@ ERA_LIBRARY = [
         "inflation_trend": "accelerating", "valuation": "normal",
         "credit": "widening", "yield_curve": "inverted",
         "semiconductor": "flat", "dollar": "weak", "external_shock": "geopolitical",
+        "cape_pct_band": "low",
         "comment": "이란 혁명 + 볼커 등판. 인플레 잡기 위한 진짜 긴축이 시작.\n주가가 더 빠지진 않으나 80년 시스템 위기가 진짜 충격이었다.",
         "quote": "인플레는 초반에 잡아야 한다. 늦으면 더 큰 대가를 치른다.",
         "aftermath": "80~82년 볼커 긴축 + 깊은 침체로 이어졌다.",
@@ -3189,6 +3206,7 @@ ERA_LIBRARY = [
         "inflation_trend": "peaking", "valuation": "low",
         "credit": "normal", "yield_curve": "inverted",
         "semiconductor": "flat", "dollar": "strong", "external_shock": "none",
+        "cape_pct_band": "low",
         "comment": "1980년은 일반적인 가을 아니다. 브레튼우즈 붕괴 후\n달러 신뢰 회복이 핵심 미션. 다우는 그 기간 올랐다.",
         "quote": "1980년 볼커는 6개월간 금리를 20퍼센트까지 올렸지만 다우와 나스닥은 그 기간동안 올랐다.",
         "aftermath": "81년 멕시코 외환위기 터지면서 그 이후 주가 폭락했다.",
@@ -3205,6 +3223,7 @@ ERA_LIBRARY = [
         "inflation_trend": "cooling", "valuation": "low",
         "credit": "widening", "yield_curve": "inverted",
         "semiconductor": "down", "dollar": "strong", "external_shock": "none",
+        "cape_pct_band": "low",
         "comment": "볼커가 인플레 잡기 위해 만든 의도된 침체. 실업률 11퍼센트 넘었다.\n그러나 그 끝에 82년 봄이 있었다.",
         "quote": "인위적인 디플레를 만들어 해결하지 않으면 경제는 사망에 이르게 된다.",
         "aftermath": "82년 8월 봄 진입. 10개월간 나스닥 2배 됐다.",
@@ -3221,6 +3240,7 @@ ERA_LIBRARY = [
         "inflation_trend": "cooling", "valuation": "low",
         "credit": "widening", "yield_curve": "recovering",
         "semiconductor": "up", "dollar": "strong", "external_shock": "none",
+        "cape_pct_band": "normal",
         "comment": "82년 8월부터 83년 6월까지 10개월간 나스닥 2배.\n장단기금리역전의 고점은 인플레 고점 근처이고 주가의 저점 근처다.",
         "quote": "떨어지면 사도 된다는 뜻이다.",
         "aftermath": "82~87년 5년 강세장. 다우 3배 됐다.",
@@ -3237,6 +3257,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "normal",
         "credit": "normal", "yield_curve": "normal",
         "semiconductor": "up", "dollar": "strong", "external_shock": "financial",
+        "cape_pct_band": "high",
         "comment": "강달러 종료의 정치적 결정. 환율 정책이 주가를 만든다.\n달러 약세 전환되면 미국 외 자산이 강해진다.",
         "quote": "환율의 비정상이 정상으로 돌아갈 때 자본은 움직인다.",
         "aftermath": "86~87년 약달러 + 신흥국 자산 강세 이어졌다.",
@@ -3253,6 +3274,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "extreme",
         "credit": "tight", "yield_curve": "flattening",
         "semiconductor": "up", "dollar": "strong", "external_shock": "none",
+        "cape_pct_band": "mid",
         "comment": "강달러 + 고밸류 + 금리 인상. 1987년 10월 단일 일자 하락.\n정확한 트리거는 없었다. 거품이 스스로 무너졌다.",
         "quote": "연극은 끝이 있고 거품은 꺼지며 불균형은 균형으로 간다.",
         "aftermath": "단일 일자 -22%. 그러나 1년 내 회복하고 90년대 강세장으로 갔다.",
@@ -3269,6 +3291,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "extreme",
         "credit": "tight", "yield_curve": "normal",
         "semiconductor": "up", "dollar": "neutral", "external_shock": "none",
+        "cape_pct_band": "extreme",
         "comment": "1989년 12월 닛케이 38915. 그 후 30년 회복 못함.\n위대한 기업이라 해서 주가가 항상 오르는 거 아니다.",
         "quote": "위대한 기업의 주가도 박살나는 걸 침체라 한다.",
         "aftermath": "닛케이 30년이 넘도록 전고점 회복 못 했다. 잃어버린 30년이다.",
@@ -3286,6 +3309,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "normal",
         "credit": "widening", "yield_curve": "flattening",
         "semiconductor": "down", "dollar": "neutral", "external_shock": "geopolitical",
+        "cape_pct_band": "high",
         "comment": "이라크의 쿠웨이트 침공. 유가 3개월 60퍼센트 급등.\n지정학 충격이 침체로 이어진 케이스.",
         "quote": "전쟁 이슈는 모든 것을 덮는다. 끝나면 진실이 드러난다.",
         "aftermath": "90년 7월~91년 3월 공식 침체로 들어갔다.",
@@ -3302,6 +3326,7 @@ ERA_LIBRARY = [
         "inflation_trend": "peaking", "valuation": "normal",
         "credit": "widening", "yield_curve": "recovering",
         "semiconductor": "down", "dollar": "neutral", "external_shock": "financial",
+        "cape_pct_band": "extreme",
         "comment": "걸프전 + 저축대부조합 위기. 90년 7월부터 91년 3월까지 공식 침체.\n지정학 충격이 신용 위기로 옮긴 결말이다.",
         "quote": "악재가 다 나오면 그때부터 사면 된다.",
         "aftermath": "91~94년 회복기. 그린스펀이 점진 인하했다.",
@@ -3318,6 +3343,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "normal",
         "credit": "tight", "yield_curve": "normal",
         "semiconductor": "up", "dollar": "neutral", "external_shock": "none",
+        "cape_pct_band": "extreme",
         "comment": "금리 올려도 경기가 버틴다. 횡보가 길어도 방향은 위다.",
         "quote": "연착륙이면 당연히 주가는 올라야 한다. 실적이 예상만큼 안빠질 것이니까.",
         "aftermath": "95~99년 5년 강세장. 결국 닷컴 광기로 진입했다.",
@@ -3334,6 +3360,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "normal",
         "credit": "normal", "yield_curve": "normal",
         "semiconductor": "up", "dollar": "neutral", "external_shock": "none",
+        "cape_pct_band": "extreme",
         "comment": "94년 연착륙 직후. 인플레 안정, 성장 견고, 시장 평온.\n여름의 한가운데. 그러나 이 위에서 광기가 시작된다.",
         "quote": "주가는 끌어내리지 않으면 계속 오른다.",
         "aftermath": "96~99년 거품 본격 진행. 96년 경고도 다 무시됐다.",
@@ -3350,6 +3377,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "high",
         "credit": "tight", "yield_curve": "normal",
         "semiconductor": "up", "dollar": "strong", "external_shock": "none",
+        "cape_pct_band": "extreme",
         "comment": "그린스펀이 시장이 비이성적으로 과열됐다고 경고했다.\n발언 후 시장은 3년 더 올랐다. 거품 경고가 작동하지 않는 단계다.",
         "quote": "사람들이 모두 위험을 안다는 것은 더 이상 위험이 아니라는 뜻이다.",
         "aftermath": "시장 3년 더 올랐다. 결국 1999 광기로 진입했다.",
@@ -3366,6 +3394,7 @@ ERA_LIBRARY = [
         "inflation_trend": "cooling", "valuation": "high",
         "credit": "widening", "yield_curve": "flattening",
         "semiconductor": "flat", "dollar": "strong", "external_shock": "financial",
+        "cape_pct_band": "extreme",
         "comment": "신흥국 발 위기 + LTCM 파산. 그린스펀 긴급 인하.\n그러나 시장은 곧 회복하고 99년 광기로 들어갔다.",
         "quote": "위기가 끝나면 광기가 시작된다.",
         "aftermath": "98~99년 그린스펀 긴급 인하 후 닷컴 광기 가속됐다.",
@@ -3382,6 +3411,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "extreme",
         "credit": "tight", "yield_curve": "normal",
         "semiconductor": "up", "dollar": "strong", "external_shock": "none",
+        "cape_pct_band": "extreme",
         "comment": "거품의 마지막 1년. 99년 PER도 28 수준이었다.\n꽃이 아름다울수록 죽음은 가깝다. 그러나 그 1년이 길다.",
         "quote": "꽃이 아름다울수록 죽음은 더 가깝다.",
         "aftermath": "2000~02년 나스닥 -78%. 회복에 15년 걸렸다.",
@@ -3399,6 +3429,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "extreme",
         "credit": "widening", "yield_curve": "inverted",
         "semiconductor": "down", "dollar": "strong", "external_shock": "none",
+        "cape_pct_band": "extreme",
         "comment": "고점에서의 금리인하 + 밸류 극단. 2000년 3월의 지문이다.\n역사상 이 정도 고평가된 PER에서 숏 잡아 실패한 적 없다.",
         "quote": "역사상 이 정도 고평가된 PER에서 숏을 잡아 실패한 사례가 없다.",
         "aftermath": "2000~02년 닷컴 붕괴. 9.11에 이어 침체로 들어갔다.",
@@ -3415,6 +3446,7 @@ ERA_LIBRARY = [
         "inflation_trend": "cooling", "valuation": "high",
         "credit": "widening", "yield_curve": "recovering",
         "semiconductor": "down", "dollar": "strong", "external_shock": "none",
+        "cape_pct_band": "mid",
         "comment": "주가가 빠지면서 PER이 더 높아졌다. 실적이 더 빠르게 빠졌으니까.\n나스닥 78퍼센트 하락. 회복에 15년 걸렸다.",
         "quote": "주가가 붕괴될 때 주가보다 실적이 더 빠른 속도로 붕괴되기에 per이 50, 60, 70, 80 된다.",
         "aftermath": "2003년 반도체 바닥 찍고 강세장 시작했다.",
@@ -3431,6 +3463,7 @@ ERA_LIBRARY = [
         "inflation_trend": "cooling", "valuation": "normal",
         "credit": "tight", "yield_curve": "normal",
         "semiconductor": "up", "dollar": "weak", "external_shock": "none",
+        "cape_pct_band": "mid",
         "comment": "반도체가 먼저 돌아섰다. 시장은 아직 의심 중.\n그러나 반도체가 가장 먼저 저점을 본다.",
         "quote": "그 어떤 섹터보다도 반도체가 가장 먼저 저점을 볼 것이다.",
         "aftermath": "2003~07년 4년 강세장. 그 사이 부동산 거품이 자랐다.",
@@ -3447,6 +3480,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "high",
         "credit": "tight", "yield_curve": "flattening",
         "semiconductor": "up", "dollar": "weak", "external_shock": "none",
+        "cape_pct_band": "mid",
         "comment": "17번 연속 인상. 그러나 시장은 계속 올랐다.\n점진 긴축이 자산가격에 늦게 반영되는 패턴. 결말은 2007년이었다.",
         "quote": "긴축이 끝나기 전엔 오를 수 있으나 긴축의 청구서는 결국 도착한다.",
         "aftermath": "2007년 신용 디커플링으로 이어지고 2008년에 터졌다.",
@@ -3463,6 +3497,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "high",
         "credit": "tight", "yield_curve": "inverted",
         "semiconductor": "up", "dollar": "neutral", "external_shock": "none",
+        "cape_pct_band": "mid",
         "comment": "금리 높은데 시장이 버틴다. 06년 말처럼 보인다.\n시간이 있지만 방향은 정해졌다.",
         "quote": "연극은 끝이 있고 거품은 꺼지며 불균형은 균형으로 간다.",
         "aftermath": "2007년 7월 신용 디커플링이 시작됐고 2008년에 패닉으로 갔다.",
@@ -3479,6 +3514,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "high",
         "credit": "widening", "yield_curve": "inverted",
         "semiconductor": "down", "dollar": "weak", "external_shock": "financial",
+        "cape_pct_band": "mid",
         "comment": "신용이 먼저 깨졌다. 주식은 아직 잠잠하다.\n채권시장이 비명을 지를 때가 진짜 가을 시작이다.",
         "quote": "채권시장의 붕괴는 세상물정 모르는 나스닥 동생을 보고 느낀 걱정의 결과다.",
         "aftermath": "2008년 9월 리만 패닉. S&P -57%까지 갔다.",
@@ -3495,6 +3531,7 @@ ERA_LIBRARY = [
         "inflation_trend": "cooling", "valuation": "normal",
         "credit": "panic", "yield_curve": "recovering",
         "semiconductor": "down", "dollar": "strong", "external_shock": "financial",
+        "cape_pct_band": "low",
         "comment": "역실적장세다. 실적이 빠지고 주가가 빠지고 실업률이 올라간다.\n근데 여기서부터 매수가 정석이다.",
         "quote": "실업률 올라갈 때부터 주식을 사기 시작하면 된다.",
         "aftermath": "2009년 3월 바닥 찍고 사상 최장 강세장 시작했다.",
@@ -3511,6 +3548,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "low",
         "credit": "widening", "yield_curve": "normal",
         "semiconductor": "up", "dollar": "weak", "external_shock": "none",
+        "cape_pct_band": "low",
         "comment": "선행지표가 먼저 돌아섰다. 시장은 아직 공포 중.\n역실적장세에선 매수가 정석이다.",
         "quote": "역실적장세에선 매수가 정석이다.",
         "aftermath": "2009~20년 11년 강세장. 사상 최장 강세장이었다.",
@@ -3528,6 +3566,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "high",
         "credit": "widening", "yield_curve": "normal",
         "semiconductor": "down", "dollar": "weak", "external_shock": "financial",
+        "cape_pct_band": "low",
         "comment": "S&P가 미국 AAA 첫 박탈. 정치발 신용 충격.\n단기 패닉 후 회복했지만 부채 누적의 기점이었다.",
         "quote": "미국 정부부채의 분명한 문제는 앞으로 있을 다양한 변수에 대비할 수 없는 수준이라는 것이다.",
         "aftermath": "단기 패닉 후 회복했다. 그러나 부채 누적은 그 후로 가속됐다.",
@@ -3544,6 +3583,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "high",
         "credit": "widening", "yield_curve": "normal",
         "semiconductor": "up", "dollar": "neutral", "external_shock": "none",
+        "cape_pct_band": "normal",
         "comment": "버냉키의 양적완화 축소 시사. 채권시장이 격렬하게 반응.\n그러나 시장은 곧 회복했다. 진짜 긴축이 아니었기 때문에.",
         "quote": "말이 아니라 행동을 봐야 한다.",
         "aftermath": "단기 채권 발작 후 시장 회복했다. 양적완화 축소는 천천히 진행됐다.",
@@ -3560,6 +3600,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "high",
         "credit": "tight", "yield_curve": "normal",
         "semiconductor": "down", "dollar": "weak", "external_shock": "financial",
+        "cape_pct_band": "high",
         "comment": "2월 5일 빅스 일일 116퍼센트 급등. 변동성 매도 상품들 한꺼번에 청산됐다.\n변동성 자체가 충격이 되는 패턴. 평온이 폭력으로 전환되는 순간이다.",
         "quote": "공짜 점심은 없다. 낮은 변동성에 베팅한 모든 것이 한 번에 깨진다.",
         "aftermath": "2018년 한 해 박스권. 12월에 추가 급락이 왔다.",
@@ -3576,6 +3617,7 @@ ERA_LIBRARY = [
         "inflation_trend": "stable", "valuation": "normal",
         "credit": "widening", "yield_curve": "flattening",
         "semiconductor": "down", "dollar": "strong", "external_shock": "none",
+        "cape_pct_band": "high",
         "comment": "파월이 4번 인상하고 시장이 흔들리자 멈췄다.\n연준의 본질은 금융 안정이지 인플레 잡이가 아니다.",
         "quote": "연준의 목표가 물가 안정이라 하는 사람은 연준을 모르는 사람이다.",
         "aftermath": "2019년 파월 유턴. 신고가 갱신했지만 2020년 코로나로 갔다.",
@@ -3590,9 +3632,9 @@ assert len(ERA_LIBRARY) == 32, f"ERA_LIBRARY 항목 수 불일치: {len(ERA_LIBR
 
 ERA_DIM_WEIGHTS = {
     "season": 3, "ff_pos": 2, "ff_action": 2,
-    "inflation_trend": 2, "valuation": 3, "credit": 2,
+    "inflation_trend": 2, "valuation": 2, "cape_pct_band": 1, "credit": 2,
     "yield_curve": 2, "semiconductor": 1, "dollar": 1, "external_shock": 2,
-}  # weight 합 = 20
+}  # weight 합 = 21 (V3.10.6: valuation 3→2 + cape_pct_band 1 추가)
 ERA_MATCH_THRESHOLD = 0.55
 
 
@@ -5734,7 +5776,7 @@ def season_history_match(season, ff_pos, val_score, semi_dir, wti_surge,
                          hy_now=None, hy_6m_chg=None, inv_state=None,
                          dxy_now=None, cpi_yoy_now=None,
                          cpi_yoy_3m_chg=None, ff_3m_chg=None,
-                         wti_3m=None):
+                         wti_3m=None, cape_pct=None):
     _base_season = season.lstrip("초늦") if season else None
     state = _build_current_state(
         season=_base_season,
@@ -5750,6 +5792,7 @@ def season_history_match(season, ff_pos, val_score, semi_dir, wti_surge,
         cpi_yoy_3m_chg=cpi_yoy_3m_chg,
         ff_3m_chg=ff_3m_chg,
         ff_6m_chg=None,
+        cape_pct=cape_pct,
     )
     return _era_match_with_threshold(state)
 
@@ -6922,12 +6965,14 @@ def main():
     if _wti_s is not None and len(_wti_s) >= 64:
         try: _wti_3m_pct_hm = (float(_wti_s.iloc[-1]) / float(_wti_s.iloc[-64]) - 1) * 100
         except Exception: pass
+    # V3.10.6: V8 2층의 cape_pct (Shiller 20Y 롤링 %ile) 전달
+    _cape_pct_hm = (v651_today.get("v8_layer2") or {}).get("cape_pct") if v651_today else None
     _hist_match = season_history_match(
         season_auto, _ff_pos_str, _val_cluster_score, _semi_dir, _wti_surge,
         hy_now=_hy_now_hm, hy_6m_chg=_hy_6m_chg_hm, inv_state=_inv_3m10y_hm,
         dxy_now=_dxy_now_hm, cpi_yoy_now=_cpi_yoy_now_hm,
         cpi_yoy_3m_chg=_cpi_yoy_3m_chg_hm, ff_3m_chg=_ff_3m_chg_hm,
-        wti_3m=_wti_3m_pct_hm,
+        wti_3m=_wti_3m_pct_hm, cape_pct=_cape_pct_hm,
     )
 
     # ═══ V3.10.4: 일회성 730일 백필 + 사이드바 상태 ═══
