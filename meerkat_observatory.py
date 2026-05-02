@@ -41,10 +41,14 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 warnings.filterwarnings("ignore")
 
-# ═══ V8.0 1층 (40박스) + 2층 (ANFCI + CAPE_pct) — 2026-04-29 머지 ═══
+# ═══ V651 — raw_data 빌드 인프라용 (계절 평가는 V8 으로 교체됨) ═══
 import season_engine_v69 as V651
+
+# ═══ V8.0 1층 (40박스) + 2층 (ANFCI + CAPE_pct) — 2026-04-29 머지 ═══
 import season_engine_v8 as V8L1
 import season_engine_vulnerability as V8L2
+
+_V69_CACHE_KEY = "v6.9.5"  # 코드 변경 시 bump → cache invalidation 강제
 
 # V8 박스 ID → 한국어 라벨 (auto_season checks dict + _SEASON_BOX_HELP 키와 1:1 일치)
 V8_BOX_LABELS = {
@@ -105,25 +109,12 @@ V8_SEASON_BOXES = {
              "W_R1", "W_R2", "W_R4", "W_V1", "W_V2"],
 }
 
-VERSION = "8.0"
-# 3.6 변경점: 거시 스코어 공식 개편 (10Y-3M 스프레드 tm 신규 추가, t 가중치 10→7)
-#            + F5 가속도 모니터 윈도우 3M/6M → 1M/3M + threshold 차별화/clip
-# 공식이 바뀌었으므로 3.5 히스토리와 시계열을 한 줄에 섞으면 Δ/ΔΔ 계산이 오염된다.
-# 따라서 score_version 필드 + velocity/delta_delta 버전 가드 + 히스토리 파일 분리.
-VERSION_STARTED = "2026-04-23"  # 3.6 적용 시작일 (적응기 배지 계산 기준, 60일간 Δ/ΔΔ 제한 표시)
-SD = Path.home() / ".meerkat"
-SF = SD / "state.json"; CF = SD / "config.json"; OD = SD / "observations"
-BKD = SD / "backups"  # 일 1회 자동 백업 폴더 (14일 유지)
-
-# ═══ V8.0 raw_data 디스크 캐시 (TTL 24h) + 히스테리시스 + prefix ═══
-_V69_CACHE_KEY = "v8.0.0"
-_RAW_PICKLE = SD / "cache" / "raw_data_v8.pickle"
+_RAW_PICKLE = Path.home() / ".meerkat" / "cache" / "raw_data_v8.pickle"
 _RAW_PICKLE_TTL_HOURS = 24
-_HYSTERESIS_MARGIN = 1.5
-_V8_PREFIX_RATIO = 0.33
 
 
 def _load_pickled_raw_if_fresh():
+    """디스크 캐시 raw_data 로드 (TTL 24h). 없거나 stale 시 None."""
     import time, pickle
     if not _RAW_PICKLE.exists(): return None
     try:
@@ -147,7 +138,10 @@ def _save_pickled_raw(raw_data):
 
 @st.cache_resource(show_spinner="V8.0 데이터 로딩 중 (FRED + yfinance + historical) ...")
 def _v651_init(_cache_key=_V69_CACHE_KEY):
-    """raw_data 디스크 캐시 (TTL 24h) + V8 1층 임계 적용."""
+    """raw_data 디스크 캐시 (TTL 24h) + V8 1층 임계 적용.
+    1) 디스크 pickle 24h 이내 → 로드 (FRED/yfinance fetch 생략, 즉시 시작)
+    2) cache miss / stale → 풀 fetch + pickle 저장
+    """
     cached = _load_pickled_raw_if_fresh()
     if cached is not None:
         V651.M.raw_data = cached
@@ -158,8 +152,16 @@ def _v651_init(_cache_key=_V69_CACHE_KEY):
     return True
 
 
+_HYSTERESIS_MARGIN = 1.5  # 실시간 today 라벨 안정화 (Opus 처방)
+_V8_PREFIX_RATIO = 0.33  # V69 (4/12) 비율 동일 — 봄/가을 11 → 임계 4, 여름/겨울 9 → 임계 3
+
+
 def _v8_prefix(season, v8_scores):
-    """V8 분모별 prefix (초/늦) — 인접 계절 비율 ≥ 33% 시 부착."""
+    """V8 분모별 prefix (초/늦) — 인접 계절 비율 ≥ 33% 시 부착.
+    V69 4/12 비율과 동일하게 V8 비대칭 분모 적응:
+      봄/가을(11박스) → 인접 ≥ 4 (36%)
+      여름/겨울(9박스) → 인접 ≥ 3 (33%)
+    """
     cycle = ["봄", "여름", "가을", "겨울"]
     if season not in cycle: return ""
     bi = cycle.index(season)
@@ -169,13 +171,17 @@ def _v8_prefix(season, v8_scores):
     if nxt_total == 0 or prv_total == 0: return ""
     nxt_ratio = v8_scores.get(nxt, 0) / nxt_total
     prv_ratio = v8_scores.get(prv, 0) / prv_total
+    # nxt 우선 (앞으로 진행) → "늦" / prv 우선 (뒤에서 옴) → "초"
     if nxt_ratio >= _V8_PREFIX_RATIO: return "늦"
     if prv_ratio >= _V8_PREFIX_RATIO: return "초"
     return ""
 
 
 def _v8_crisis_history_365d(offset):
-    """직전 365일 안에 VIX>30 / 실업 3M+50bp+ / HY>5% 이력. 방안 4 path-dependent tiebreaker 보조."""
+    """직전 365일 (1년) 안에 W_C2 (VIX>30) 또는 W_R1 (실업 3M+50bp+) 또는 HY>5% 이력.
+    봄=여름 동률 path-dependent tiebreaker 보조 — 위기 직후 회복기 = 봄, 안정 mid-cycle = 여름.
+    GT 80 검증: 1991-11 (1990 침체 직후) ✓ 검출 / 1992-06 (안정 1년 후) ✓ 미검출.
+    """
     raw = V651.M.raw_data if (V651.M.raw_data is not None) else None
     if raw is None: return False
     LOOKBACK = 365
@@ -212,17 +218,19 @@ def _v8_crisis_history_365d(offset):
 
 
 def _v8_resolve_best(scores, offset=None):
-    """V8_SEASON_BOXES 카운트 scores → best season.
+    """V8_SEASON_BOXES 카운트 scores dict → best season.
     GT 80 검증 기반 동률 룰 (2026-04-29 + 방안 4 path-dependent):
-      인접: 봄=여름→여름, 여름=가을→가을, 가을=겨울→겨울, 봄=겨울→겨울 (침체 진행 우선)
-      예외 — 봄=여름 동률 + 직전 365d 위기 이력 → 봄 (회복 중)
-      비인접: 봄=가을→봄, 여름=겨울→겨울
-      3개 이상: cycle 후순위 fallback
+      인접 동률: 사이클 진행 우선 (봄=여름→여름, 여름=가을→가을, 가을=겨울→겨울)
+        예외 1: 봄=겨울 → 겨울 (침체 진행 중 우선, GT 3건 검증)
+        예외 2: 봄=여름 동률 + 직전 365d 위기 이력 → 봄 (회복 중, GT 1991-11 정답화)
+      비인접 동률: 봄=가을 → 봄 (회복 우세, GT 1건), 여름=겨울 → 겨울 (보수)
+      3개 이상 동률: 사이클 후순위 fallback (3-way 4건 중 3건 정답)
     """
     _SO = ["봄", "여름", "가을", "겨울"]
     _max = max(scores.values())
     cands = [s for s in _SO if scores[s] == _max]
     if len(cands) == 2:
+        # 봄=여름 동률 path-dependent (방안 4): 직전 365d 위기 이력 있으면 봄
         if frozenset(cands) == frozenset(("봄", "여름")) and offset is not None:
             try:
                 if _v8_crisis_history_365d(offset): return "봄"
@@ -240,6 +248,7 @@ def _v8_resolve_best(scores, offset=None):
 
 
 def _v8_eval_at(offset):
+    """단일 offset V8 평가 → (best_season, scores_dict, boxes)."""
     _v8_eval = V8L1.evaluate_v8_layer1(V651.M.raw_data, offset)
     _boxes = _v8_eval.get("boxes", {})
     _scores = {
@@ -255,16 +264,20 @@ def _v8_apply_transition(curr_best, prev_30d_best, cape_20y_pct):
       박스 시스템에 '기억' 부재 → 직전 30일 best 전파해 사이클 순서 강제.
       가을/겨울 → 여름 사이클 역행 시 봄 삽입 (얕은 침체 봄 detection).
       CAPE 20y %ile < 50 게이트로 V자 반등 false 봄 차단.
+      검증: GT 80 raw 74→75.75% (+1.75%p, 봄 +1), out-of-sample 3 false 차단.
     """
     if curr_best != "여름": return curr_best
     if prev_30d_best not in ("겨울", "가을"): return curr_best
-    if cape_20y_pct is None: return curr_best
-    if cape_20y_pct >= 50: return curr_best
+    if cape_20y_pct is None: return curr_best  # 결측 시 보수 차단
+    if cape_20y_pct >= 50: return curr_best    # 고평가 = V자 반등이지 봄 아님
     return "봄"
 
 
 def evaluate_v651_today(offset=0, hysteresis=True, hysteresis_margin=None):
-    """V8.0 1층 (40박스) + 2층 (ANFCI + CAPE_pct) 평가 + 히스테리시스."""
+    """V8.0 1층 (40박스) + 2층 (ANFCI + CAPE_pct) 평가.
+    raw_data 는 V651.M.raw_data 사용 (인프라). V651 평가는 호출 안 함.
+    hysteresis=True: 직전 1일 평가 비교 + margin 1.5 적용 → today 라벨 chattering 차단.
+    """
     if hysteresis_margin is None:
         hysteresis_margin = _HYSTERESIS_MARGIN
     _v651_init()
@@ -289,16 +302,18 @@ def evaluate_v651_today(offset=0, hysteresis=True, hysteresis_margin=None):
         return None
     season = raw_best
     hyst_held = False
+    # 실시간 히스테리시스 (today 평가 시 직전 1일 비교)
     if hysteresis and offset == 0:
         try:
             yest_best, yest_scores, _ = _v8_eval_at(offset + 1)
             if raw_best != yest_best:
                 margin = _v8_scores[raw_best] - _v8_scores[yest_best]
                 if margin < hysteresis_margin:
-                    season = yest_best
+                    season = yest_best  # 직전 라벨 유지
                     hyst_held = True
         except Exception:
             pass
+    # V8 2층 (ANFCI + CAPE_pct)
     try:
         _v8_layer2 = V8L2.compute_layer2(V651.M.raw_data, offset)
     except Exception:
@@ -310,6 +325,7 @@ def evaluate_v651_today(offset=0, hysteresis=True, hysteresis_margin=None):
         season = _v8_apply_transition(season, _prev_30d_best, _cape_pct_now)
     except Exception:
         pass
+    # V8 prefix (초/늦) — V69 비율 동일 룰 (봄/가을 11→4, 여름/겨울 9→3)
     prefix = _v8_prefix(season, _v8_scores)
     # V8 confidence — best ≤ 4 → "판정 불가" (명세) / 그 외 비율 기반
     _top_total = len(V8_SEASON_BOXES.get(season, [])) or 1
@@ -330,6 +346,16 @@ def evaluate_v651_today(offset=0, hysteresis=True, hysteresis_margin=None):
         "v8_layer2": _v8_layer2,
     }
 
+
+VERSION = "8.0"
+# 3.6 변경점: 거시 스코어 공식 개편 (10Y-3M 스프레드 tm 신규 추가, t 가중치 10→7)
+#            + F5 가속도 모니터 윈도우 3M/6M → 1M/3M + threshold 차별화/clip
+# 공식이 바뀌었으므로 3.5 히스토리와 시계열을 한 줄에 섞으면 Δ/ΔΔ 계산이 오염된다.
+# 따라서 score_version 필드 + velocity/delta_delta 버전 가드 + 히스토리 파일 분리.
+VERSION_STARTED = "2026-04-23"  # 3.6 적용 시작일 (적응기 배지 계산 기준, 60일간 Δ/ΔΔ 제한 표시)
+SD = Path.home() / ".meerkat"
+SF = SD / "state.json"; CF = SD / "config.json"; OD = SD / "observations"
+BKD = SD / "backups"  # 일 1회 자동 백업 폴더 (14일 유지)
 
 # ═══ 자동 백업 ═══
 # 앱 실행 시 하루 1회 핵심 파일을 ~/.meerkat/backups/YYYY-MM-DD/ 에 복사.
@@ -913,6 +939,8 @@ _CARD_RANGES = {
     "XLE-SPY 3M":      "<b>XLE-SPY 3M</b>\n🔴 강한 아웃퍼폼  >+5%p\n🟡 아웃퍼폼      +2~+5\n⚪ 균형          -2~+2\n🟡 언더퍼폼      -3~-2\n🟢 강한 언더퍼폼  <-3%p",
     "XLK-SPY 3M":      "<b>XLK-SPY 3M</b>\n🟢 강한 아웃퍼폼  >+5%p\n🟡 아웃퍼폼      +2~+5\n⚪ 균형          -2~+2\n🟡 언더퍼폼      -3~-2\n🔴 강한 언더퍼폼  <-3%p",
     "섹터 로테이션":    "<b>섹터 로테이션 4사분면</b>\n🔴 인플레 회귀  XLE>+5, XLK<-3\n🟢 성장 회귀    XLK>+5, XLE<0\n🔴 동반 약세    둘 다 <-2\n🟡 균형 강세    둘 다 >+2 (거품 후기)\n⚪ 균형/노이즈  나머지",
+    "노동격차 (구인-실업자)": "<b>노동격차 (JOLTS 구인 - 실업자 수)</b>\nJOLTS 구인 - 실업자 수. 양수 크면 임금 인플레 압력. 0 깨고 음수 가면 사라. 22년 8월 +6500K. 파월이 잭슨홀에서 본 그 지표다.\n🔴 과열        ≥+3000K\n🟢 정상        +1500~+3000\n🟡 균형        0~+1500\n🔴 침체 진입   <0",
+    "공급충격 디커플링": "<b>공급충격 디커플링 (가을 #7 박스 진행도)</b>\nWTI 3M / SPX 3M. 유가만 튀고 시장 잠잠하면 충격 미반영. 시장이 음전환하는 순간 가을. 가을 #7 박스 진행도.\n⚪ 조용              WTI≤+15 또는 SPX≥0\n🟡 선행 신호         WTI>+15 / SPX≥0\n🟠 박스 발동 직전    WTI>+15 / -3≤SPX<0\n🔴 충격 활성         WTI>+30 / SPX<-3\n🔴 지정학 충격       WTI>+50",
     "2차 도함수 매트릭스": (
         "<b>2차 도함수 매트릭스 (ΔΔ)</b>\n"
         "5클러스터 + 거시 종합의 (값, Δ, ΔΔ) 테이블.\n"
@@ -936,9 +964,11 @@ _CARD_RANGES = {
         "디스인플레 감속 = 인플레 재점화 경고.\n가속 = 연준이 편해진다."),
 }
 
-# ─── 채권 탭 장단기금리차 그래프 위 ⓘ 툴팁 (스프레드 3종 미어캣 톤) ───
+# ─── 채권 탭 장단기금리차 그래프 위 ⓘ 툴팁 (스프레드 3종 거시 톤) ───
+# 카드 (_CARD_RANGES) 와 별개. 채권 탭 plotly 그래프 위 라인에서 _tip() 으로 호출.
 # ─── 금리곡선 6상태 (A=10Y-2Y / B=10Y-3M / C=2Y-3M 역전 부호 조합) ───
-# 종속성: A = B + C → 8 조합 중 2개 수학적 불가능.
+# 종속성: A = B + C (10Y-2Y = (10Y-3M) + (2Y-3M)) → 8 조합 중 2개 수학적 불가능.
+# (a_inv, b_inv, c_inv) 키. 값: (라벨, 금리 구조, 색 키, 짧은 본문, 전문)
 _CURVE_STATE = {
     (False, False, False): (
         "정상 우상향", "3M < 2Y < 10Y", "green",
@@ -1453,15 +1483,19 @@ def fest_fwd_pe():
 
 def auto_season(fd, yd, ff, unemp, fpe, tpe, cape, wti, spy_info,
                 fpe_z=None, fpe_3m_chg=None):
-    """V8.0 1층 40박스 + 히스테리시스 + 2층 (ANFCI/CAPE) 평가.
-    evaluate_v651_today() 호출 — 대시보드/계절판단 탭 일치 보장.
+    """V8.0 1층 40박스 + 히스테리시스 (2026-04-29 머지).
+    evaluate_v651_today() 호출하여 결과 통일 — 대시보드/계절판단 탭 일치 보장.
     """
-    res = evaluate_v651_today(offset=0)
+    res = evaluate_v651_today(offset=0)  # 히스테리시스 + prefix 적용된 V8 결과
     if res is None:
         return "—", "판정 불가", {"봄":[],"여름":[],"가을":[],"겨울":[]}, {"봄":0,"여름":0,"가을":0,"겨울":0}
-    best_label = res["label"]
+
+    best_label = res["label"]  # prefix + base (예: "초가을") — 대시보드/계절판단 탭 일치
+    best_base = res["base"]    # base only (scores dict key 용)
     v8_boxes = res.get("v8_boxes", {})
     v8_scores = res.get("v8_scores", {})
+
+    # checks dict (계절별 박스 라벨 + bool) — UI 호환
     checks = {}
     for season in ("봄", "여름", "가을", "겨울"):
         items = []
@@ -1469,14 +1503,19 @@ def auto_season(fd, yd, ff, unemp, fpe, tpe, cape, wti, spy_info,
             v = v8_boxes.get(box_id)
             items.append((V8_BOX_LABELS[box_id], v is True))
         checks[season] = items
+
     scores = {s: float(v8_scores.get(s, 0)) for s in ("봄", "여름", "가을", "겨울")}
-    conf = res.get("confidence", "보통")
+    conf = res.get("confidence", "보통")  # V8 비율 기반 conf — 계절판단 탭과 일치
+
     return best_label, conf, checks, scores
 
 
-def _legacy_auto_season_v3_UNREACHABLE(fd, yd, ff, unemp, fpe, tpe, cape, wti, spy_info,
+def _legacy_auto_season_v3(fd, yd, ff, unemp, fpe, tpe, cape, wti, spy_info,
                 fpe_z=None, fpe_3m_chg=None):
-    """[unreachable] V3.12.1 36박스 평가 — V8 머지 후 폐기. 본문은 호출 안 됨."""
+    """V3.12.1 36박스 평가 — V8 머지 후 폐기 (호출 시 NotImplementedError).
+    아래 본체는 unreachable. 외부 참조 검증 후 통째 삭제 가능.
+    """
+    raise NotImplementedError("V3.12.1 auto_season 폐기 (V8 머지 2026-04-29)")
     from datetime import timedelta as td
     def _ago(s, days):
         """시계열에서 N일 전 값. 월간/일간 데이터 모두 대응."""
@@ -2115,7 +2154,7 @@ def _cut_cycle(ff_s):
 #   - T10Y2Y 판정 불능: 19.4% → 5.0% (남은 9일은 c3=0 flat 구간, 구조적 한계)
 #   - VIX clip 발동: 30일 → 8일
 #   - 종합 판정 전환점 리드: median 14일 유지
-# 재튜닝 시 별도 테스트 스크립트로 median 재산출 + 윈도우 검증.
+# 재튜닝 시 tests/_test_accel_pace_threshold.py 로 median 재산출, tests/_test_accel_window_backtest.py 로 검증.
 PACE_THRESHOLDS = {
     "VIX":     0.30,     # median 2.375 × 12.6% — clip 발동 30→8일 (목표 <10 ✓)
     "HY":      0.01,     # median 0.20 × 5%
@@ -2697,7 +2736,7 @@ RAW_FRED_IDS = [
 RAW_YF_TICKERS = [
     "DX-Y.NYB", "SOXX", "^GSPC", "GC=F", "QQQ", "XLE", "XLK",
     "^VIX", "CL=F", "KRW=X", "TQQQ", "SOXL", "VOO", "SGOV",
-    "SPY",  # V3.10.5: 배당수익률 시계열 합성용 (SPY dividends + price)
+    "SPY",  # V3.9.2: 배당수익률 시계열 합성용 (SPY dividends + price)
 ]
 # fd 내부 키 → raw 저장 키 (FRED series ID)
 FD_TO_RAW = {
@@ -2822,7 +2861,7 @@ def _hist_backfill_once(api_key, force_fred=None, force_yf=None):
                     y_fail += 1
         except Exception:
             y_fail += len(yf_todo)
-    # V3.10.5: SPY 배당수익률 시계열 합성 (SPY price + SPY dividends → trailing 12M yield).
+    # V3.9.2: SPY 배당수익률 시계열 합성 (SPY price + SPY dividends → trailing 12M yield).
     # API 추가 키 0. 1993~ (SPY 출시) 일별 시계열 약 8000+ 포인트.
     try:
         import yfinance as _yf_div
@@ -3716,7 +3755,6 @@ def measure_era_progress(era_id, long_range_series, current_raw_data, recent_day
                 "series_used_count": 0, "series_used_names": [],
                 "series_missing_names": _all_disp, "total_era_days": total_days}
     available = _available_series_for_era(era, long_range_series or {})
-    # 8 canonical 만 사용
     avail_canon = {k: v for k, v in available.items() if k in _DTW_CANONICAL_KEYS}
     n_series = len(avail_canon)
     if n_series < 3:
@@ -3737,7 +3775,6 @@ def measure_era_progress(era_id, long_range_series, current_raw_data, recent_day
         curr_s = (current_raw_data or {}).get(ck)
         if curr_s is None or len(curr_s) < 3: continue
         try:
-            # curr 도 일간 ffill — 월간 FRED 시계열 호환
             try:
                 _last = curr_s.index.max()
                 _idx_d = pd.date_range(end=_last, periods=recent_days, freq="D")
@@ -3746,7 +3783,7 @@ def measure_era_progress(era_id, long_range_series, current_raw_data, recent_day
                 _curr_recent = curr_s.dropna().tail(recent_days)
             if len(_curr_recent) < 10: continue
             hist_arr = _np.array([float(x) for x in hist_s.values if x is not None and not pd.isna(x)])
-            if len(hist_arr) < 10: continue  # 짧은 era (1987 블랙먼데이 97일) 호환
+            if len(hist_arr) < 10: continue
             _mu = float(_np.mean(hist_arr)); _sd = float(_np.std(hist_arr))
             if _sd == 0: continue
             curr_arr = _np.array([float(x) for x in _curr_recent.values if x is not None and not pd.isna(x)])
@@ -3766,7 +3803,6 @@ def measure_era_progress(era_id, long_range_series, current_raw_data, recent_day
                 "series_missing_names": miss_disp,
                 "total_era_days": total_days}
     confidence = "high" if n_used >= 5 else "medium"
-    # 다변량 결합 (각 시계열 같은 길이로 trim)
     min_curr = min(len(s) for s in curr_norms)
     min_hist = min(len(s) for s in hist_norms)
     if min_curr < 10 or min_hist < 30:
@@ -3778,11 +3814,9 @@ def measure_era_progress(era_id, long_range_series, current_raw_data, recent_day
                 "total_era_days": total_days}
     curr_mat = _np.column_stack([s[-min_curr:] for s in curr_norms])
     hist_mat = _np.column_stack([s[-min_hist:] for s in hist_norms])
-    # 슬라이딩 윈도우 DTW — hist 의 각 끝점 t 에서 curr_window 와 매칭
     best_t = None; best_dist = float("inf")
     window = min_curr
-    # 성능: 너무 자주 호출 X — step 으로 sampling
-    _step = max(1, (min_hist - window) // 60)  # 최대 ~60 비교
+    _step = max(1, (min_hist - window) // 60)
     _t = window
     while _t <= min_hist:
         try:
@@ -4057,28 +4091,16 @@ def _series_at_date(s, target_date):
     except Exception: return None
 
 
-def _trim_series_at_offset(s, offset):
-    """offset 만큼 뒤로 잘라낸 시리즈. DatetimeIndex 면 date-based,
-    그 외 iloc-based. helpers 와 동일 분기 — calendar/iloc 혼동 방지."""
-    if s is None: return None
-    if hasattr(s, "index") and isinstance(s.index, pd.DatetimeIndex):
-        if offset <= 0: return s
-        ref = s.index[-1] - pd.Timedelta(days=offset)
-        return s[s.index <= ref]
-    # fallback: iloc-based
-    if offset <= 0: return s
-    if len(s) <= offset: return s.iloc[:0]
-    return s.iloc[:len(s) - offset]
-
-
 def _safe_iloc_at(s, offset):
     """시점 가변 값 접근. DatetimeIndex 면 date-based (월간/일간 자동 호환).
     그 외 fallback: iloc-based. offset = today 기준 days 전."""
     try:
         if s is None or len(s) == 0: return None
+        # DatetimeIndex 자동 감지 → date-based
         if hasattr(s, "index") and isinstance(s.index, pd.DatetimeIndex):
             target = s.index[-1] - pd.Timedelta(days=offset)
             return _series_at_date(s, target)
+        # fallback: iloc-based (DatetimeIndex 아닌 경우)
         if len(s) <= offset: return None
         return float(s.iloc[-1 - offset])
     except Exception:
@@ -4095,6 +4117,7 @@ def _pct_change_at(s, offset, lookback_days):
             prev = _series_at_date(s, ref - pd.Timedelta(days=lookback_days))
             if cur is None or prev is None or prev == 0: return None
             return (cur / prev - 1) * 100
+        # fallback: iloc-based
         if len(s) <= offset + lookback_days: return None
         cur = float(s.iloc[-1 - offset])
         prev = float(s.iloc[-1 - offset - lookback_days])
@@ -4114,6 +4137,7 @@ def _abs_change_at(s, offset, lookback_days):
             prev = _series_at_date(s, ref - pd.Timedelta(days=lookback_days))
             if cur is None or prev is None: return None
             return cur - prev
+        # fallback: iloc-based
         if len(s) <= offset + lookback_days: return None
         cur = float(s.iloc[-1 - offset])
         prev = float(s.iloc[-1 - offset - lookback_days])
@@ -4134,6 +4158,7 @@ def _percentile_at(s, offset, lookback_days):
             window = s[(s.index >= window_start) & (s.index <= ref)].dropna()
             if len(window) < 30: return None
             return float((window <= cur).sum()) / len(window) * 100
+        # fallback: iloc-based
         if len(s) <= offset + lookback_days: return None
         cur = float(s.iloc[-1 - offset])
         window = s.iloc[max(0, len(s) - 1 - offset - lookback_days):len(s) - offset]
@@ -4144,141 +4169,21 @@ def _percentile_at(s, offset, lookback_days):
 
 
 def _evaluate_season_at_offset(raw, offset):
-    """offset 시점의 4계절 점수 (간소화 9박스 평가). (season, scores_dict) 또는 (None, None).
-    auto_season() 의 핵심 로직 추출 + 시간 가변. 정확도 trade-off 있음 (백필 전용)."""
-    qqq = raw.get("qqq_s"); ff = raw.get("ff_s"); hy = raw.get("hy_s")
-    unrate = raw.get("unrate_s"); inv3m10y = raw.get("t10y3m_s"); cpi = raw.get("cpi_yoy_s")
-    cape = raw.get("cape_s"); fpe = raw.get("fpe_s"); vix = raw.get("vix_s")
-    sox = raw.get("sox_s"); spx = raw.get("spx_s"); rsp = raw.get("rsp_s"); spy = raw.get("spy_s")
-    wti = raw.get("wti_s")
-    # QQQ DD from 52w high (date-based)
-    qqq_dd = None
+    """[V8.0] offset 시점의 4계절 평가. (season, scores_dict) 반환.
+    V8L1.evaluate_v8_layer1 호출. raw 인자는 V651.M.raw_data 사용 (호환).
+    """
     try:
-        _qqq_t = _trim_series_at_offset(qqq, offset)
-        if _qqq_t is not None and len(_qqq_t) >= 252:
-            window = _qqq_t.iloc[-252:]
-            cur = float(_qqq_t.iloc[-1])
-            high_52w = float(window.max())
-            if high_52w > 0: qqq_dd = (cur / high_52w - 1) * 100
-    except Exception: pass
-    # 실업률 절대 + 3M 변화
-    unemp_now = _safe_iloc_at(unrate, offset)
-    unemp_3m = _abs_change_at(unrate, offset, 90)
-    # FF 6M 변화 + percentile
-    ff_6m = _abs_change_at(ff, offset, 180)
-    ff_pos_pct = _percentile_at(ff, offset, 252 * 10)
-    # HY OAS 절대 + 6M 변화 + 정점 대비
-    hy_now = _safe_iloc_at(hy, offset)
-    hy_6m = _abs_change_at(hy, offset, 180)
-    hy_pct = (hy_now * 100) if (hy_now is not None and hy_now <= 1.0) else hy_now
-    # 10Y-3M 역전 상태 (간단 분류, date-based)
-    inv_now = _safe_iloc_at(inv3m10y, offset)
-    inv_180_min = None
-    try:
-        _inv_t = _trim_series_at_offset(inv3m10y, offset)
-        if _inv_t is not None and len(_inv_t) >= 252:
-            inv_180_min = float(_inv_t.iloc[-252:].min())
-    except Exception: pass
-    # CPI YoY
-    cpi_now = _safe_iloc_at(cpi, offset)
-    cpi_3m_chg = _abs_change_at(cpi, offset, 90) if cpi is not None else None
-    # PE
-    fpe_now = _safe_iloc_at(fpe, offset)
-    cape_now = _safe_iloc_at(cape, offset)
-    # VIX 90D max (date-based)
-    vix_90max = None
-    try:
-        _vix_t = _trim_series_at_offset(vix, offset)
-        if _vix_t is not None and len(_vix_t) >= 30:
-            if hasattr(_vix_t, "index") and isinstance(_vix_t.index, pd.DatetimeIndex):
-                _ref = _vix_t.index[-1]
-                w = _vix_t[(_vix_t.index >= _ref - pd.Timedelta(days=90)) & (_vix_t.index <= _ref)]
-            else:
-                w = _vix_t.iloc[-90:]
-            if len(w) > 0: vix_90max = float(w.max())
-    except Exception: pass
-    # SOX/SPX 1M, 3M, 6M
-    sox_3m = _pct_change_at(sox, offset, 63)
-    spx_3m = _pct_change_at(spx, offset, 63)
-    sox_6m = _pct_change_at(sox, offset, 126)
-    spx_6m = _pct_change_at(spx, offset, 126)
-    sox_1m = _pct_change_at(sox, offset, 22)
-    spx_1m = _pct_change_at(spx, offset, 22)
-    # RSP/QQQ 6M
-    rsp_6m = _pct_change_at(rsp, offset, 126)
-    qqq_6m = _pct_change_at(qqq, offset, 126)
-    # SPY/RSP 1M
-    spy_1m = _pct_change_at(spy, offset, 22)
-    rsp_1m = _pct_change_at(rsp, offset, 22)
-    # WTI 3M
-    wti_3m = _pct_change_at(wti, offset, 63)
-
-    scores = {"봄": 0, "여름": 0, "가을": 0, "겨울": 0}
-    # ── 봄 박스 (간소화) ──
-    if inv_180_min is not None and inv_now is not None and inv_180_min < -0.2 and inv_now > inv_180_min * 0.5:
-        scores["봄"] += 1
-    if hy_now is not None and hy_pct is not None and hy_pct < 4 and hy_6m is not None and hy_6m < 0:
-        scores["봄"] += 1
-    if ff_pos_pct is not None and ff_pos_pct < 30 and ff_6m is not None and ff_6m < 0:
-        scores["봄"] += 1
-    if unemp_now is not None and (unemp_now >= 4 or (unemp_3m is not None and unemp_3m > 0.5)):
-        scores["봄"] += 1
-    if qqq_dd is not None and qqq_dd < -25:
-        scores["봄"] += 1
-    if (fpe_now is not None and fpe_now <= 18) or (cape_now is not None and cape_now <= 25):
-        scores["봄"] += 1
-    if cpi_3m_chg is not None and cpi_now is not None and cpi_3m_chg < 0 and cpi_now < 3:
-        scores["봄"] += 1
-    # ── 여름 박스 ──
-    if inv_now is not None and inv_now > 0 and (inv_180_min is None or inv_180_min >= -0.05):
-        scores["여름"] += 1
-    if hy_pct is not None and hy_pct < 4:
-        scores["여름"] += 1
-    if ff_6m is not None and abs(ff_6m) < 0.5:
-        scores["여름"] += 1
-    if fpe_now is not None and fpe_now < 22:
-        scores["여름"] += 1
-    if unemp_3m is not None and unemp_3m <= 0:
-        scores["여름"] += 1
-    if sox_6m is not None and spx_6m is not None and sox_6m > spx_6m:
-        scores["여름"] += 1
-    if rsp_6m is not None and qqq_6m is not None and rsp_6m > 0 and qqq_6m > 0:
-        scores["여름"] += 1
-    # ── 가을 박스 ──
-    if inv_now is not None and inv_now < -0.05:
-        scores["가을"] += 1
-    if hy_6m is not None and hy_6m > 0:
-        scores["가을"] += 1
-    if ff_pos_pct is not None and ff_pos_pct >= 70:
-        scores["가을"] += 1
-    if (fpe_now is not None and fpe_now >= 22) or (cape_now is not None and cape_now >= 35):
-        scores["가을"] += 1
-    if hy_6m is not None and hy_now is not None and hy_pct is not None and hy_6m > 0 and hy_pct > 3.5:
-        scores["가을"] += 1
-    if wti_3m is not None and spx_3m is not None and wti_3m > 15 and spx_3m < 0:
-        scores["가을"] += 1
-    if sox_3m is not None and spx_3m is not None and spx_6m is not None and sox_3m < spx_3m and spx_6m > 0:
-        scores["가을"] += 1
-    if cape_now is not None and cape_now >= 35:
-        scores["가을"] += 1
-    # ── 겨울 박스 ──
-    if hy_pct is not None and hy_pct > 5:
-        scores["겨울"] += 1
-    if ff_6m is not None and ff_6m < 0:
-        scores["겨울"] += 1
-    if qqq_dd is not None and qqq_dd < -20 and spx_1m is not None and abs(spx_1m) < 3:
-        scores["겨울"] += 1
-    if unemp_3m is not None and unemp_3m > 0.5:
-        scores["겨울"] += 1
-    if spy_1m is not None and rsp_1m is not None and spy_1m > 0 and rsp_1m < 0:
-        scores["겨울"] += 1
-    if sox_1m is not None and spx_1m is not None and qqq_dd is not None and sox_1m > spx_1m and qqq_dd < -15:
-        scores["겨울"] += 1
-
-    if all(v == 0 for v in scores.values()):
+        _v651_init()
+        _v8_eval = V8L1.evaluate_v8_layer1(V651.M.raw_data, offset)
+        _v8_boxes = _v8_eval.get("boxes", {})
+        _v8_scores = {
+            _sn: float(sum(1 for _bid in V8_SEASON_BOXES[_sn] if _v8_boxes.get(_bid) is True))
+            for _sn in ("봄", "여름", "가을", "겨울")
+        }
+        season = _v8_resolve_best(_v8_scores, offset=offset)
+        return season, _v8_scores
+    except Exception:
         return None, None
-    best = max(scores.items(), key=lambda x: x[1])
-    return best[0], scores
 
 
 def _build_state_at_offset_full(raw, offset):
@@ -4656,9 +4561,7 @@ def _build_long_range_raw(api_key, start="1990-01-01"):
                 out[_k] = _s
             except Exception: continue
     except Exception: pass
-    # vix_s: FRED 우선, 없으면 yfinance fallback
     out["vix_s"] = out.get("vix_fred_s") if out.get("vix_fred_s") is not None else out.get("vix_yf_s")
-    # CPI YoY 합성 (월간 → 일간 ffill)
     try:
         _cpi = out.get("cpi_s")
         if _cpi is not None and len(_cpi) >= 13:
@@ -4669,25 +4572,27 @@ def _build_long_range_raw(api_key, start="1990-01-01"):
     out.setdefault("fpe_s", None)
     out.setdefault("te_s", None)
     out.setdefault("eg_s", None)
-    # STEP A-2 / STEP 5-1 / STEP 5-3 / STEP 5-8: historical_loader 합본 적재
-    # — HY OAS Wayback 합본 (1996-12~) / CAPE multpl (1990~) /
-    #   trailing earnings te+eg / forward_pe 자동 누적 + daily ffill
+    # STEP A-2: HY OAS 합본 적재 (Wayback 1996~ + FRED 현재) — 정책 변경 historical 차단 우회
     try:
         from historical_loader import load_hy_oas_history, load_cape_history, load_forward_pe_history
         _hy_hist = load_hy_oas_history()
         if _hy_hist is not None and len(_hy_hist) > 0:
-            out["hy_s"] = _hy_hist  # FRED 직접 fetch 결과 override (3년 제한 우회)
+            out["hy_s"] = _hy_hist
+        # STEP 5-1: CAPE 시계열 적재 (multpl)
         _cape_hist = load_cape_history()
         if _cape_hist is not None and len(_cape_hist) > 0:
             out["cape_s"] = _cape_hist
+        # STEP 5-8: forward_pe.json 시계열 — 라이브 누적 (앱 실행마다 1 entry)
         _fpe_hist = load_forward_pe_history()
         if _fpe_hist is not None and len(_fpe_hist) > 0:
+            # 일별 ffill — 앱 실행 안 한 날 보완
             try:
                 _idx = pd.date_range(start=_fpe_hist.index.min(),
                                       end=pd.Timestamp.now().normalize(), freq="D")
                 out["fpe_s"] = _fpe_hist.reindex(_idx, method="ffill")
             except Exception:
                 out["fpe_s"] = _fpe_hist
+        # STEP 5-3: trailing earnings 시계열 (te / eg)
         try:
             _te_path = SD / "cache" / "trailing_earnings_history.json"
             if _te_path.exists():
@@ -4715,7 +4620,6 @@ def _month_last_business_day(year, month):
     today = _d.today()
     if year > today.year or (year == today.year and month > today.month):
         return today
-    # 다음 달 1일에서 -1일
     if month == 12:
         nxt = _d(year + 1, 1, 1)
     else:
@@ -4769,9 +4673,9 @@ def _compute_on_the_fly(target_date, raw_data):
         "actual_date": target_date.isoformat(),
         "season": season_then,
         "season_scores": dict(scores_then or {}),
-        "macro_score": None,  # 즉석 mac_score 계산 V1 생략 (full_score 함수 시간 가변 X)
+        "macro_score": None,
         "history_match": hist_match,
-        "dtw_progress": None,  # V1: 과거 시점 DTW 별도 처리 필요 — 다음 버전
+        "dtw_progress": None,
         "active_boxes": dict(scores_then or {}),
         "reason": None,
     }
@@ -4954,7 +4858,6 @@ def _compute_month_summary(daily_results):
         scs = [r["history_top1_score"] for r in daily_results
                if r.get("history_top1_id") == eid and r.get("history_top1_score") is not None]
         era_avg[eid] = float(_np.mean(scs)) if scs else 0.0
-    # era / 계절 전환 횟수 (연속 변경 지점)
     n_era_tr = 0
     _prev_era = None
     for r in daily_results:
@@ -5062,9 +4965,23 @@ def _compute_timeline(daily_results):
     return timeline
 
 
+def _trim_series_at_offset(s, offset):
+    """offset 만큼 뒤로 잘라낸 시리즈. DatetimeIndex 면 date-based,
+    그 외 iloc-based. helpers 와 동일 분기 — calendar/iloc 혼동 방지."""
+    if s is None: return None
+    if hasattr(s, "index") and isinstance(s.index, pd.DatetimeIndex):
+        if offset <= 0: return s
+        ref = s.index[-1] - pd.Timedelta(days=offset)
+        return s[s.index <= ref]
+    # fallback: iloc-based
+    if offset <= 0: return s
+    if len(s) <= offset: return s.iloc[:0]
+    return s.iloc[:len(s) - offset]
+
+
 def _inv_state_at_offset(s, offset, lookback=252):
     """V3.12.1: _inv_state 의 시점 가변 버전. date-based trim 후 production 로직 동일.
-    offset=0 이면 _inv_state 와 동일 출력."""
+    offset=0 이면 _inv_state(line 1383) 와 동일 출력."""
     if s is None: return None
     s2 = _trim_series_at_offset(s, offset)
     if s2 is None: return None
@@ -5110,8 +5027,7 @@ def _diagnose_9boxes_at_offset(raw, offset):
 
 
 def _diagnose_box_booleans(raw, offset):
-    """V3.12.1 진단: 그 시점 9박스 boolean 식 + raw 입력값 dump.
-    _evaluate_season_at_offset 의 box 식을 mirror — 어느 박스가 fire 했는지 확인."""
+    """V3.12.1 진단: 그 시점 9박스 boolean 식 + raw 입력값 dump."""
     qqq = raw.get("qqq_s"); ff = raw.get("ff_s"); hy = raw.get("hy_s")
     unrate = raw.get("unrate_s"); inv3m10y = raw.get("t10y3m_s"); cpi = raw.get("cpi_yoy_s")
     cape = raw.get("cape_s"); fpe = raw.get("fpe_s"); vix = raw.get("vix_s")
@@ -5243,7 +5159,6 @@ def _query_macro_at_month(year, month, raw_data, obs_path):
     """V3.12.1: 월 전체 영업일 분포 기반 매크로 진단. live/backfill/on_the_fly 혼합 가능."""
     from datetime import date as _d
     days = _month_business_days(year, month)
-    # obs.jsonl 한 번 읽고 date → rows 인덱스 빌드
     obs_by_date = {}
     try:
         if obs_path and Path(obs_path).exists():
@@ -5258,11 +5173,9 @@ def _query_macro_at_month(year, month, raw_data, obs_path):
                     if d: obs_by_date.setdefault(d, []).append(r)
     except Exception: pass
     daily = [_eval_one_day(_dd, raw_data, obs_by_date) for _dd in days]
-    # 정렬 보장
     daily.sort(key=lambda r: r["date"])
     summary = _compute_month_summary(daily)
     timeline = _compute_timeline(daily)
-    # V3.12.1 진단: 2025-04 (트럼프 관세 충격) — 가을 미발동 원인 검토 console dump
     if year == 2025 and month == 4:
         from datetime import date as _diag_d
         try:
@@ -5300,13 +5213,9 @@ def _render_query_result(result):
     _src_str = " · ".join(f"{src_label.get(s, s)} {n}일" for s, n in src_counter.most_common())
     st.markdown(f"### 📅 {year}년 {month}월 조회 ({n_days} 영업일)")
     st.caption(f"데이터 출처: {_src_str}")
-
-    # unavailable only
     if all(r.get("source") == "unavailable" for r in daily):
         st.warning("이 달 모든 영업일에서 raw 시계열이 부족 — 9박스 평가 불가.")
         return
-
-    # 섹션 1: 계절 분포
     st.markdown("#### 📊 계절 분포")
     dist = summary.get("season_distribution") or {}
     dominant = summary.get("dominant_season")
@@ -5332,8 +5241,6 @@ def _render_query_result(result):
     _n_era_tr = summary.get("n_era_transitions", 0)
     _n_se_tr = summary.get("n_season_transitions", 0)
     st.caption(f"변동성: **{vol}** — era {_n_era_tr}회 / 계절 {_n_se_tr}회 전환")
-
-    # 섹션 2: 4계절 평균 점수
     st.markdown("#### 📊 4계절 평균 점수 (월 평균 ±std)")
     means = summary.get("season_scores_mean") or {}
     stds  = summary.get("season_scores_std") or {}
@@ -5342,7 +5249,6 @@ def _render_query_result(result):
         _lines.append(f"  {_season_emoji(k)} {k}: {means.get(k, 0):.1f} ±{stds.get(k, 0):.1f}")
     st.code("\n".join(_lines), language=None)
 
-    # 4계절 박스 체크리스트 (계절 판단 탭 구조 — fire 빈도 기반)
     box_agg = summary.get("box_aggregated") or {}
     box_n = summary.get("box_valid_days") or 0
     box_failed = summary.get("box_eval_failed_days") or 0
@@ -5406,20 +5312,19 @@ def _render_query_result(result):
             "신용_급격_확장": "HY 확장", "단기_역전": "단기 역전",
             "변동성_클러스터": "변동성 클러스터",
         }
+        # fire 한 카드만 (월 내 1일이라도 fire)
         _fired = [(_card_short.get(k, k), v) for k, v in _alert_by_card.items() if v > 0]
         _fired.sort(key=lambda x: -x[1])
         _n_fired = len(_fired)
-        if _alert_sev_key == "warn":
+        if _alert_sev_key == "warn":   # 1단계 🟡
             _names = _fired[0][0] if _fired else "?"
             _line = f"단기 경보 {_alert_sev_label} — {_names}"
-        elif _alert_sev_key == "alert":
+        elif _alert_sev_key == "alert":  # 2~3단계 🟠
             _names = ", ".join(n for n, _ in _fired[:3])
             _line = f"단기 경보 {_alert_sev_label} — {_names}"
-        else:
+        else:  # shock 4~5단계 🔴
             _line = f"단기 경보 {_alert_sev_label} — {_n_fired}종 fire"
         st.caption(_line)
-
-    # 섹션 3: 역사적 유사국면 (월 평균 매칭률)
     era_dist = summary.get("top1_era_distribution") or {}
     era_avg = summary.get("top1_era_avg_score") or {}
     if era_dist:
@@ -5433,8 +5338,6 @@ def _render_query_result(result):
             st.markdown(f"{_medals[_i]} 등장 {_n}일 — **{_lbl}** (평균 매칭률 {_avg*100:.0f}%)")
     else:
         st.caption("🔍 역사 매칭 결과 없음 (raw 부족 또는 era 정의 외)")
-
-    # 섹션 4: timeline
     if len(timeline) > 1:
         st.markdown("#### 🎯 1위 era 변화 timeline")
         for _seg in timeline:
@@ -5679,19 +5582,18 @@ def _render_seasonal_overlay(_obs_df=None):
         _close = _close.iloc[:, 0]
     _fig = go.Figure()
     _past_palette = [
-        ("#3b82f6", 0.7),  # 파랑
-        ("#10b981", 0.7),  # 초록
-        ("#a855f7", 0.7),  # 보라
-        ("#f59e0b", 0.7),  # 주황
-        ("#ec4899", 0.7),  # 분홍
-        ("#06b6d4", 0.7),  # 청록
-        ("#84cc16", 0.7),  # 라임
-        ("#f97316", 0.7),  # 진주황
-        ("#8b5cf6", 0.7),  # 진보라
+        ("#3b82f6", 0.7),
+        ("#10b981", 0.7),
+        ("#a855f7", 0.7),
+        ("#f59e0b", 0.7),
+        ("#ec4899", 0.7),
+        ("#06b6d4", 0.7),
+        ("#84cc16", 0.7),
+        ("#f97316", 0.7),
+        ("#8b5cf6", 0.7),
     ]
     _cur_color = "#dc2626"
-    # 1. 과거 연도 trace
-    _past_doy_to_returns = {}  # {doy: [returns from each past year]}
+    _past_doy_to_returns = {}
     for _y in range(start_year, cur_year):
         _yd = _close[_close.index.year == _y]
         if len(_yd) < 5: continue
@@ -5699,7 +5601,7 @@ def _render_seasonal_overlay(_obs_df=None):
         if _first == 0: continue
         _cum = (_yd / _first - 1) * 100
         _doy = _yd.index.dayofyear
-        _past_idx = cur_year - _y - 1  # 작년=0, 재작년=1
+        _past_idx = cur_year - _y - 1
         _color, _opacity = _past_palette[_past_idx % len(_past_palette)]
         _fig.add_trace(go.Scatter(
             x=_doy, y=_cum.values, mode="lines", name=str(_y),
@@ -5711,7 +5613,6 @@ def _render_seasonal_overlay(_obs_df=None):
             try:
                 _past_doy_to_returns.setdefault(int(_d), []).append(float(_v))
             except Exception: continue
-    # 2. N년 평균 라인 (검정 점선) — 현재 연도 직전에 추가
     if _past_doy_to_returns:
         _avg_doys = sorted(_past_doy_to_returns.keys())
         _avg_vals = [float(_np.mean(_past_doy_to_returns[_d])) for _d in _avg_doys]
@@ -5722,7 +5623,6 @@ def _render_seasonal_overlay(_obs_df=None):
             opacity=1.0,
             hovertemplate=f"<b>{_past_n}년 평균</b><br>%{{x}}일째<br>%{{y:.2f}}%<extra></extra>",
         ))
-    # 3. 현재 연도 trace (마지막에 — 위에 그려지도록)
     _yd_cur = _close[_close.index.year == cur_year]
     if len(_yd_cur) >= 5:
         _first_cur = float(_yd_cur.iloc[0])
@@ -6352,27 +6252,27 @@ def main():
         try: fyf_batch.clear()
         except Exception: pass
         st.rerun()
-    # ─ 일일 자동 스냅샷 토글 (작업 스케줄러 + daily_snapshot.py 연동) ─
+    # ── 일일 자동 스냅샷 토글 (작업 스케줄러 + daily_snapshot.py 연동) ──
+    # flag 파일 존재 = ON. 작업 스케줄러는 매일 09:00 실행되지만 flag 없으면 즉시 종료.
     _DAILY_FLAG = SD / "daily_snapshot.flag"
     _DAILY_LAST = SD / "daily_snapshot.last_run"
-    _daily_on_now = _DAILY_FLAG.exists()
-    _daily_on_new = st.sidebar.checkbox(
+    _flag_state = _DAILY_FLAG.exists()
+    _new_state = st.sidebar.checkbox(
         "📅 일일 자동 스냅샷",
-        value=_daily_on_now,
-        help="작업 스케줄러가 매일 09:00 daily_snapshot.py 실행 시 이 토글 ON 이면 기록 누적. "
-             "OFF 면 스크립트 실행돼도 즉시 종료.",
+        value=_flag_state,
+        help="ON 시 작업 스케줄러가 매일 09:00 헤드리스 실행 → V8 라벨 + 점수 + 2층 자동 기록 (PC 켜져있어야)",
     )
-    if _daily_on_new != _daily_on_now:
+    if _new_state != _flag_state:
         try:
-            if _daily_on_new:
-                SD.mkdir(parents=True, exist_ok=True)
+            if _new_state:
+                _DAILY_FLAG.parent.mkdir(parents=True, exist_ok=True)
                 _DAILY_FLAG.write_text(datetime.now().isoformat(), "utf-8")
             else:
                 _DAILY_FLAG.unlink(missing_ok=True)
         except Exception as _e:
             st.sidebar.caption(f"⚠️ flag 처리 실패: {type(_e).__name__}")
         st.rerun()
-    if _daily_on_new and _DAILY_LAST.exists():
+    if _new_state and _DAILY_LAST.exists():
         try:
             _last_ts = float(_DAILY_LAST.read_text("utf-8").strip())
             _last_dt = datetime.fromtimestamp(_last_ts)
@@ -6380,7 +6280,7 @@ def main():
             st.sidebar.caption(f"   └ 마지막 실행: {_last_dt.strftime('%m-%d %H:%M')} ({_hours_ago:.1f}h 전)")
         except Exception:
             st.sidebar.caption("   └ 마지막 실행: 기록 없음")
-    elif _daily_on_new:
+    elif _new_state:
         st.sidebar.caption("   └ 마지막 실행: 아직 없음")
     # ── 자가 업데이트 (GitHub raw, git 불필요) ──
     if st.sidebar.button("⬇️ 업데이트 (GitHub)", use_container_width=True, help="GitHub 에서 최신 버전 다운로드. git 불필요."):
@@ -6865,10 +6765,10 @@ def main():
     _mk_last_buy   = mk.get("last_buy_date") if mk else None
     _mk_ytd_count  = mk.get("trigger_count_ytd") if mk else None
     _mk_next_buy   = mk.get("next_buy_amount") if mk else None
-    # V3.5-hotfix2: ratio 매도 파라미터 (외부 도구 프리셋 → state.json) — fallback은 V1.2 호환값
+    # V3.5-hotfix2: ratio 매도 파라미터 (app.py 프리셋 → state.json) — fallback은 V1.2 호환값
     _mk_trigger    = mk.get("trigger") if mk else None
     _mk_target     = mk.get("target") if mk else None
-    # DD 트리거 단계 파라미터 (외부 도구 → state.json → 본 앱)
+    # DD 트리거 단계 파라미터 (app.py → state.json → eye.py)
     # 매수배율 DD (DCA 증폭)
     _dd_caution = mk.get("dd_caution", -0.10) if mk else -0.10
     _dd_correction = mk.get("dd_correction", -0.15) if mk else -0.15
@@ -6915,8 +6815,10 @@ def main():
     # ═══ V8.0 1층 (40박스) + 2층 (ANFCI + CAPE) 평가 ═══
     try:
         v651_today = evaluate_v651_today(offset=0)
-    except Exception:
+        _v651_err = None
+    except Exception as _v651_e:
         v651_today = None
+        _v651_err = f"{type(_v651_e).__name__}: {_v651_e}"
 
     # ── Export 데이터 (탭별 + 전체) ──
     _now_str = datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -7015,7 +6917,6 @@ def main():
         cpi_yoy_3m_chg=_cpi_yoy_3m_chg_hm, ff_3m_chg=_ff_3m_chg_hm,
         wti_3m=_wti_3m_pct_hm,
     )
-    _hist_match_easy = _hist_match  # V3.9.1: 거리 매칭은 mode 무관 — 동일 결과 alias 유지
 
     # ═══ V3.10.4: 일회성 730일 백필 + 사이드바 상태 ═══
     _force_bf = bool(st.session_state.pop("_force_backfill_rerun", False))
@@ -7047,7 +6948,7 @@ def main():
         _bf_meta = _read_backfill_marker(OBS_JSONL) if _bf_done else None
         if _bf_done and _bf_meta:
             _ok = _bf_meta.get("_backfill_ok", 0); _fail = _bf_meta.get("_backfill_fail", 0)
-            _blk = _bf_meta.get("_backfill_blocked", 0); _att = _bf_meta.get("_backfill_days_attempted", 0)
+            _blk = _bf_meta.get("_backfill_blocked", 0)
             st.sidebar.caption(f"📚 역사 매칭 백필: 완료 ({_ok}일 성공 / {_fail} 실패 / {_blk} 차단)")
         elif _bf_done:
             st.sidebar.caption("📚 역사 매칭 백필: 완료")
@@ -7058,6 +6959,7 @@ def main():
             st.rerun()
     except Exception:
         pass
+
     # ── 2×2 사분면 ──
     _mx_key = ("g" if (gs is not None and gs >= 50) else "l") + ("g" if (ms is not None and ms >= 50) else "l")
     _MX_LABELS = {"gg": "매직존", "gl": "대기존", "lg": "경계존", "ll": "평시존"}
@@ -7393,7 +7295,7 @@ def main():
     # 공급충격 디커플링 (WTI 3M / SPX 3M). 가을 #7 박스 진행도
     try:
         _wti_pre = fd.get("WTI")
-        # NOTE: pandas Series 에 `or` 연산자 사용 금지 → ValueError 가 외부 try 에 삼켜져 _shock_state=None 결과
+        # NOTE: pandas Series 에 `or` 연산자 사용 금지 → ValueError 가 외부 try 에 삼켜짐.
         _spx_pre = yd.get("SPX")
         if _spx_pre is None:
             _spx_pre = yd.get("^GSPC")
@@ -7520,8 +7422,7 @@ def main():
         "클러스터_코멘트_쉬운": _cl_decouple_easy,   # V3.4
         "거시_속도": _mac_velocity,                # V3.4 (Δ30D)
         "거시_속도_라벨": _vel_lbl,                # V3.4
-        "역사_매칭": _hist_match,                    # V3.4
-        "역사_매칭_쉬운": _hist_match_easy,          # V3.4
+        "역사_매칭": _hist_match,                    # V3.4 → V3.9.1 거리 매칭
         "거시_히스토리": _mac_history,             # V3.5 (date/score/mk/clusters/divergence/season)
         "히스토리_누적일수": len(_mac_history),       # V3.5
         "사분면": _mx_label,
@@ -7599,7 +7500,7 @@ def main():
     # 계절 체크리스트 상세 (16개 항목)
     # numpy.bool_ → Python bool 강제 변환 (JSON 인코더 호환)
     export_season_checks = {sn: [(lbl, bool(v)) for lbl, v in items] for sn, items in season_checks.items()}
-    # JSON 부조화 방지 — 라벨 결정 과정 분리 명시.
+    # JSON 부조화 방지 — 라벨 결정 과정 분리 명시 (제미나이 지적 반영)
     # 동률 (여름=가을 4=4) 시 raw_best=가을 + 히스테리시스 직전 라벨=여름 유지 → label="늦여름" 가능.
     # 점수 동률인데 라벨 "늦여름" 으로 보이는 부조화 추적 위해 raw_best/base/prefix/hysteresis 분리 export.
     _v8_diag = v651_today or {}
@@ -7619,8 +7520,7 @@ def main():
             "낮음":     "best 5",
             "판정 불가": "best ≤4",
         },
-        "역사_매칭": _hist_match,           # V3.4
-        "역사_매칭_쉬운": _hist_match_easy,  # V3.4
+        "역사_매칭": _hist_match,           # V3.4 → V3.9.1 거리 매칭
     }
     # 시계열 원본 (최근 252일)
     def _ts_export(s, n=252):
@@ -7716,7 +7616,7 @@ def main():
                 if drivers:
                     dr = "".join(f"<tr><td>{dk}</td><td>{dv.get('raw','—')}</td><td>{dv.get('weight','—')}</td><td><strong>{dv.get('contrib','—')}</strong></td></tr>" for dk, dv in drivers.items())
                     cl_html += f"<table><tr><th>지표</th><th>원점수</th><th>가중치</th><th>기여</th></tr>{dr}</table>"
-            if cl_html: cl_html = f"<h2>거시 뷰 — 5클러스터</h2>{cl_html}"
+            if cl_html: cl_html = f"<h2>거시의 뷰 — 5클러스터</h2>{cl_html}"
         # 계절 체크리스트 테이블
         sc_html = ""
         if data.get("계절_체크리스트"):
@@ -7801,7 +7701,7 @@ tr:hover{{background:#263238}}
 {gd_html}{cl_html}{md_html}{sc_html}{card_html}{delta_html}{tr_html}{chart_html}
 <hr><p style="color:#666;font-size:12px">미어캣의 관측소 V{VERSION} · 자동 생성</p></body></html>"""
 
-    # ── state.json에 거시 데이터 기록 (외부 도구 연동용) ──
+    # ── state.json에 거시 데이터 기록 (app.py 연동용) ──
     # V3.7-hotfix6: 실시간 현재가 5종 추가 (엑셀 가계부 자동 갱신용)
     def _last(ticker):
         _s = yd.get(ticker)
@@ -7814,7 +7714,7 @@ tr:hover{{background:#263238}}
     _voo_live  = _last("VOO")
     _sgov_live = _last("SGOV")
     # V4.5: 한국 ETF 종가 (pykrx) — TIGER 381180, K-QLD 418660
-    # pykrx 는 KRX 웹 스크래핑 기반이라 간헐적 실패 가능 → None 시 외부 도구가 기존 셀 값 유지.
+    # pykrx 는 KRX 웹 스크래핑 기반이라 간헐적 실패 가능 → None 시 app.py 가 기존 셀 값 유지.
     _tiger_krw = fetch_krx_etf_close("381180")
     _kqld_krw  = fetch_krx_etf_close("418660")
     sstate({
@@ -7823,7 +7723,7 @@ tr:hover{{background:#263238}}
         "mac_score": gs, "meerkat_score": ms,
         "vix": _r2(vix), "fear_greed": _r2(fgs, 0),
         "qqq_dd_52w": _r2(_mk_qqq_dd, 1), "soxx_dd_52w": _r2(_mk_soxx_dd, 1),
-        # 52w 고점 절대값 (엑셀 수기 입력 제거용 — 외부 도구 dash_xl 오버라이드 소스)
+        # 52w 고점 절대값 (엑셀 수기 입력 제거용 — app.py dash_xl 오버라이드 소스)
         "qqq_52w_high":  _r2(_mk_qqq_52w_high, 4) if _mk_qqq_52w_high is not None else None,
         "soxx_52w_high": _r2(_mk_soxx_52w_high, 4) if _mk_soxx_52w_high is not None else None,
         # V3.7-hotfix6: 실시간 현재가 (총계 B5/B12/B20 + 주간점검 T17 + VOO 가계부용)
@@ -7865,9 +7765,6 @@ tr:hover{{background:#263238}}
             "ts":      datetime.now().isoformat(timespec="seconds"),
             "date":    _date.today().isoformat(),
             "version": VERSION,
-            "_tool_version": VERSION,
-            "_tool_name":    "미어캣의 관측소",
-            "_author":       __author__,
             # 핵심 스코어
             "mac_score":     float(gs) if gs is not None else None,
             "meerkat_score": float(ms) if ms is not None else None,
@@ -7937,19 +7834,6 @@ tr:hover{{background:#263238}}
             "f6_eps_chg_30d":   float(_refl_30["eps_chg"]) if (_refl_30 and _refl_30.get("eps_chg") is not None) else None,
             "f6_spx_chg_30d":   float(_refl_30["spx_chg"]) if (_refl_30 and _refl_30.get("spx_chg") is not None) else None,
             "f6_lookback_days": int(_refl_30["n"])         if (_refl_30 and _refl_30.get("n") is not None) else None,
-            # 클러스터별 Δ30D / ΔΔ (5클러스터 + 거시 종합)
-            "mac_delta":         (_mac_dd.get("delta")         if _mac_dd     else None),
-            "mac_delta_delta":   (_mac_dd.get("delta_delta")   if _mac_dd     else None),
-            "cluster_bond_delta":      (_cl_dd.get("채권/금리",   {}) or {}).get("delta")       if _cl_dd.get("채권/금리")   else None,
-            "cluster_bond_dd":         (_cl_dd.get("채권/금리",   {}) or {}).get("delta_delta") if _cl_dd.get("채권/금리")   else None,
-            "cluster_val_delta":       (_cl_dd.get("밸류에이션", {}) or {}).get("delta")       if _cl_dd.get("밸류에이션") else None,
-            "cluster_val_dd":          (_cl_dd.get("밸류에이션", {}) or {}).get("delta_delta") if _cl_dd.get("밸류에이션") else None,
-            "cluster_stress_delta":    (_cl_dd.get("스트레스",   {}) or {}).get("delta")       if _cl_dd.get("스트레스")   else None,
-            "cluster_stress_dd":       (_cl_dd.get("스트레스",   {}) or {}).get("delta_delta") if _cl_dd.get("스트레스")   else None,
-            "cluster_real_delta":      (_cl_dd.get("실물",       {}) or {}).get("delta")       if _cl_dd.get("실물")       else None,
-            "cluster_real_dd":         (_cl_dd.get("실물",       {}) or {}).get("delta_delta") if _cl_dd.get("실물")       else None,
-            "cluster_semi_delta":      (_cl_dd.get("반도체",     {}) or {}).get("delta")       if _cl_dd.get("반도체")     else None,
-            "cluster_semi_dd":         (_cl_dd.get("반도체",     {}) or {}).get("delta_delta") if _cl_dd.get("반도체")     else None,
             # V3.10.0 역사 매칭 — top 3 enriched + 차원별 매칭 (10개 차원, 0/1)
             "history_era_top1":             _hist_match.get("era"),
             "history_era_label":            _hist_match.get("label"),
@@ -7992,6 +7876,19 @@ tr:hover{{background:#263238}}
             "era_progress_current_day":  (_dtw_progress.get("current_day_in_era") if _dtw_progress else None),
             "era_progress_confidence":   (_dtw_progress.get("confidence") if _dtw_progress else None),
             "era_progress_series_count": (_dtw_progress.get("series_used_count") if _dtw_progress else None),
+            # 클러스터별 Δ30D / ΔΔ (5클러스터 + 거시 종합)
+            "mac_delta":         (_mac_dd.get("delta")         if _mac_dd     else None),
+            "mac_delta_delta":   (_mac_dd.get("delta_delta")   if _mac_dd     else None),
+            "cluster_bond_delta":      (_cl_dd.get("채권/금리",   {}) or {}).get("delta")       if _cl_dd.get("채권/금리")   else None,
+            "cluster_bond_dd":         (_cl_dd.get("채권/금리",   {}) or {}).get("delta_delta") if _cl_dd.get("채권/금리")   else None,
+            "cluster_val_delta":       (_cl_dd.get("밸류에이션", {}) or {}).get("delta")       if _cl_dd.get("밸류에이션") else None,
+            "cluster_val_dd":          (_cl_dd.get("밸류에이션", {}) or {}).get("delta_delta") if _cl_dd.get("밸류에이션") else None,
+            "cluster_stress_delta":    (_cl_dd.get("스트레스",   {}) or {}).get("delta")       if _cl_dd.get("스트레스")   else None,
+            "cluster_stress_dd":       (_cl_dd.get("스트레스",   {}) or {}).get("delta_delta") if _cl_dd.get("스트레스")   else None,
+            "cluster_real_delta":      (_cl_dd.get("실물",       {}) or {}).get("delta")       if _cl_dd.get("실물")       else None,
+            "cluster_real_dd":         (_cl_dd.get("실물",       {}) or {}).get("delta_delta") if _cl_dd.get("실물")       else None,
+            "cluster_semi_delta":      (_cl_dd.get("반도체",     {}) or {}).get("delta")       if _cl_dd.get("반도체")     else None,
+            "cluster_semi_dd":         (_cl_dd.get("반도체",     {}) or {}).get("delta_delta") if _cl_dd.get("반도체")     else None,
         }
         _hist_append_observation(_obs_row)
         try: _hist_load_obs_df.clear()
@@ -8245,7 +8142,7 @@ tr:hover{{background:#263238}}
                 <div style="font-size:var(--mac-fs-md);color:{_m}">2×2 매트릭스{_tip(_tip_mx(gs, ms))}</div>
                 <div style="font-size:var(--mac-fs-md);color:{_t};margin:10px 0;line-height:1.5">{interp}</div>
                 <div style="border-top:1px solid {_bd};padding-top:10px;margin-top:10px">
-                <div style="font-size:var(--mac-fs-sm);color:{_m}">거시 한줄평</div>
+                <div style="font-size:var(--mac-fs-sm);color:{_m}">거시의 한줄평</div>
                 <div style="font-size:var(--mac-fs-md);color:{scc};font-style:italic;margin-top:6px">{sqt}</div></div></div>""", unsafe_allow_html=True)
 
         _fig_radar = None  # 아래에서 생성
@@ -8344,7 +8241,7 @@ tr:hover{{background:#263238}}
 
         st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
 
-        # ── 거시 뷰: 5클러스터 레이더 ──
+        # ── 거시의 뷰: 5클러스터 레이더 ──
         _clusters = mac_clusters(gs_detail)
         if _clusters and any(v["score"] is not None for v in _clusters.values()):
             _rc1, _rc2 = st.columns([1, 2])
@@ -9043,7 +8940,7 @@ tr:hover{{background:#263238}}
 
         # ── 데이터 Export (대시보드) ──
         st.markdown("---")
-        _all_charts = [c for c in [(_fig_radar,"거시 뷰") if _fig_radar else None, (_fig_mx,"2×2 매트릭스") if _fig_mx else None, (_fig_bond,"장단기금리차") if _fig_bond else None, (_fig_semi,"SOX/SPX 비율") if _fig_semi else None, (_fig_season,"계절 점수") if _fig_season else None] if c]
+        _all_charts = [c for c in [(_fig_radar,"거시의 뷰") if _fig_radar else None, (_fig_mx,"2×2 매트릭스") if _fig_mx else None, (_fig_bond,"장단기금리차") if _fig_bond else None, (_fig_semi,"SOX/SPX 비율") if _fig_semi else None, (_fig_season,"계절 점수") if _fig_season else None] if c]
         with st.expander("📦 JSON Export — 클로드 상담 · 데이터 분석용"):
             ej1, ej2, ej3 = st.columns(3)
             with ej1:
@@ -9234,7 +9131,7 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
             b1, b2, b3, b4 = st.columns(4)
             with b1:
                 _v = f"{_mk_ratio:.3f}" if _mk_ratio is not None else "—"
-                # V3.5-hotfix2: trigger/target은 외부 도구 활성 프리셋에서 동적으로 받음 (fallback V1.2)
+                # V3.5-hotfix2: trigger/target은 app.py의 활성 프리셋에서 동적으로 받음 (fallback V1.2)
                 _trg = _mk_trigger if _mk_trigger is not None else 1.7
                 _tgt = _mk_target  if _mk_target  is not None else 1.55
                 _c = C["green"] if (_mk_ratio is not None and _mk_ratio < _tgt) else C["orange"] if (_mk_ratio is not None and _mk_ratio < _trg) else C["red"] if _mk_ratio is not None else _t
@@ -9287,7 +9184,7 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
                 except: pass
             st.caption(f"💾 state.json 최종 갱신: {_upd}")
 
-            # 트리거 임계값 표 (외부 도구에서 설정한 값) — 매수배율 DD + 재투입 DD
+            # 트리거 임계값 표 (app.py에서 설정한 값) — 매수배율 DD + 재투입 DD
             st.markdown(f"<div style='height:10px'></div>", unsafe_allow_html=True)
             _th_html = f"""<div style='background:{_cd};border:1px solid {_bd};border-radius:8px;padding:12px 16px'>
                 <div style='font-size:var(--mac-fs-md);color:{_m};font-weight:600;margin-bottom:6px'>⚙️ 매수배율 DD 임계 (주간 DCA 증폭)</div>
@@ -9329,7 +9226,7 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
                 </table></div>"""
             st.markdown(_th_html, unsafe_allow_html=True)
         else:
-            st.warning("⚠️ state.json에 계좌 데이터 없음. 외부 도구에서 데이터를 채워야 연동된다.")
+            st.warning("⚠️ state.json에 계좌 데이터 없음. app.py에서 엑셀을 업로드해야 연동된다.")
 
         # ── 4행: SOX/SPX 상대강도 (반도체 리딩 신호) ──
         if _sox_spx_s is not None and len(_sox_spx_s) > 60:
@@ -9378,7 +9275,7 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
             if len(cm) > 0: sd_["2Y-3M"] = d2s.loc[cm] - d3s.loc[cm]     # 2Y - 3M (부호 통일)
         if sd_:
             cl = {"10Y-2Y": C["blue"], "10Y-3M": C["orange"], "2Y-3M": C["purple"]}
-            # 그래프 위 ⓘ 툴팁 (스프레드 3종 미어캣 톤) — 각 _tip 을 별도 column 으로 격리해
+            # 그래프 위 ⓘ 툴팁 (스프레드 3종 거시 톤) — 각 _tip 을 별도 column 으로 격리해
             # st.markdown 한 호출 안에 nested HTML 이 markdown parser 에 의해 깨지는 문제 방지
             _spread_tip_keys = [s for s in ("10Y-2Y", "10Y-3M", "2Y-3M") if s in sd_]
             if _spread_tip_keys:
@@ -9386,7 +9283,7 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
                     f"<div style='font-size:var(--mac-fs-sm);color:{C['muted']};margin:4px 0 2px'>"
                     f"📊 스프레드 3종 — 모두 <b>(장기물 − 단기물)</b>. "
                     f"<b style='color:{C['red']}'>0 밑 = 역전 = 위험</b>. "
-                    f"각 라벨 옆 ⓘ 호버 — 미어캣 해설.</div>",
+                    f"각 라벨 옆 ⓘ 호버 — 거시 해설.</div>",
                     unsafe_allow_html=True,
                 )
                 _tip_cols = st.columns(len(_spread_tip_keys))
@@ -9649,66 +9546,76 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
         st.subheader(bsl("🌡️ 계절 판단", mode))
         st.caption("날씨보단 계절이 중요하다. 관찰이다. 개입이 아니다.")
 
-        # 상단: V8 계절 판정 + 2층 (ANFCI / CAPE_pct)
-        # V8 결과 추출 (히스테리시스 + prefix + conf 적용)
-        _v8_res = evaluate_v651_today(offset=0) or {}
-        _v_l2 = _v8_res.get("v8_layer2") or {}
-        _anfci = _v_l2.get("anfci"); _anfci_label = _v_l2.get("anfci_label", "데이터 없음")
-        _cape_pct = _v_l2.get("cape_pct"); _cape_label = _v_l2.get("cape_pct_label", "데이터 없음")
-        _recov_pct = _v_l2.get("recovery_pct"); _recov_label = _v_l2.get("recovery_label", "데이터 없음")
-        _anfci_color = "#ff4444" if (_anfci is not None and _anfci >= 1.0) else \
-                       ("#ffaa00" if (_anfci is not None and _anfci >= 0.5) else \
-                       ("#fcc41f" if (_anfci is not None and _anfci >= 0.0) else C["muted"]))
-        _cape_color = "#ff4444" if (_cape_pct is not None and _cape_pct >= 90) else \
-                      ("#ffaa00" if (_cape_pct is not None and _cape_pct >= 75) else \
-                      ("#fcc41f" if (_cape_pct is not None and _cape_pct >= 50) else C["muted"]))
-        _recov_color = "#22c55e" if (_recov_pct is not None and _recov_pct <= -10) else \
-                       ("#fcc41f" if (_recov_pct is not None and _recov_pct <= -5) else \
-                       ("#ff4444" if (_recov_pct is not None and _recov_pct > 0) else C["muted"]))
-        _anfci_str = f"{_anfci:+.2f}" if _anfci is not None else "n/a"
-        _cape_str = f"{_cape_pct:.0f}" if _cape_pct is not None else "n/a"
-        _recov_str = f"{_recov_pct:+.1f}%" if _recov_pct is not None else "n/a"
-        _tip_anfci = ("시카고 연준 ANFCI (Adjusted National Financial Conditions Index).\n"
-                      "주식·채권·환·신용 105개 지표를 합성해서 '돈 빌리기 얼마나 어려운가' 를 점수화한다.\n"
-                      "0 = 평균.   양수 = 긴축적 (대출 까다롭고 회사채 스프레드 벌어진다).   음수 = 완화적.\n"
-                      "1.0 넘으면 금융 위기 수준. -0.5 미만이면 돈잔치.\n"
-                      "주간 갱신, 1971+.")
-        _tip_cape = ("Shiller CAPE (10년 평균 이익 PE) 의 직근 20년 분포 백분위.\n"
-                     "100 = 20년 중 가장 비싸다.   50 = 중간.   0 = 20년 최저.\n"
-                     "75% 넘으면 역사적 고평가, 90% 넘으면 거품권.\n"
-                     "현재 비싸냐 싸냐를 묻는 거지 '이게 곧 빠진다' 는 신호 아니다 — 비싼 게 더 비싸질 수도 있다.")
-        _tip_recov = ("미국 신규 실업급여 청구건수 (Initial Claims) 4주 평균이 직근 13주 정점 대비 얼마나 빠졌는가.\n"
-                      "🟢 -10%↓ = 회복 진행 (해고 줄어드는 중)\n"
-                      "🟡 -5%↓ = 회복 시작\n"
-                      "⚪ 0 부근 = 정점 부근\n"
-                      "🔴 양수 = 신규 청구 상승 중 (해고 늘어난다)\n"
-                      "1층이 '겨울' 판정해도 이게 🟢 면 '바닥은 지났다' 신호. 봄 임박 보조 지표.")
+        if not v651_today:
+            _err_hint = f" — 에러: {_v651_err}" if _v651_err else ""
+            st.info(f"V8.0 평가 데이터 미준비 (FRED/yfinance 페치 실패 또는 첫 로딩 중).{_err_hint} 햄버거 메뉴 → Clear cache → R 키 (캐시 비우고 재실행).")
+        else:
+            # ── 큰 계절 카드 + 점수 차트 (구 미어캣 디자인, V6.9 데이터) ──
+            _v_label = v651_today["label"]
+            _v_base = v651_today["base"]
+            _v_color = SC.get(_v_base, C["gold"]) if _v_base in SC else C["gold"]
+            _v_disp = season_label(_v_label, mode)
+            # V8 2층 — ANFCI + CAPE 백분위 (모순지수 대체)
+            _v_l2 = v651_today.get("v8_layer2") or {}
+            _anfci = _v_l2.get("anfci"); _anfci_label = _v_l2.get("anfci_label", "데이터 없음")
+            _cape_pct = _v_l2.get("cape_pct"); _cape_label = _v_l2.get("cape_pct_label", "데이터 없음")
+            _recov_pct = _v_l2.get("recovery_pct"); _recov_label = _v_l2.get("recovery_label", "데이터 없음")
+            _anfci_color = "#ff4444" if (_anfci is not None and _anfci >= 1.0) else \
+                           ("#ffaa00" if (_anfci is not None and _anfci >= 0.5) else \
+                           ("#fcc41f" if (_anfci is not None and _anfci >= 0.0) else C["muted"]))
+            _cape_color = "#ff4444" if (_cape_pct is not None and _cape_pct >= 90) else \
+                          ("#ffaa00" if (_cape_pct is not None and _cape_pct >= 75) else \
+                          ("#fcc41f" if (_cape_pct is not None and _cape_pct >= 50) else C["muted"]))
+            # 회복 신호 색상 — 음수일수록 회복 (녹색), 양수면 신규 청구 상승 (적색)
+            _recov_color = "#22c55e" if (_recov_pct is not None and _recov_pct <= -10) else \
+                           ("#fcc41f" if (_recov_pct is not None and _recov_pct <= -5) else \
+                           ("#ff4444" if (_recov_pct is not None and _recov_pct > 0) else C["muted"]))
+            # V8 박스 점수 (분모: 봄 11 / 여름 9 / 가을 11 / 겨울 9)
+            _v8_scores_main = v651_today.get("v8_scores") or {}
+            _scores_for_card = {}; _evals_for_card = {}
+            for _sn in ["봄", "여름", "가을", "겨울"]:
+                _scores_for_card[_sn] = int(_v8_scores_main.get(_sn, 0))
+                _evals_for_card[_sn] = len(V8_SEASON_BOXES.get(_sn, []))
+            # confidence = evaluate_v651_today 에서 계산된 값 (대시보드와 일치)
+            _v_conf = v651_today.get("confidence", "보통")
 
-        b1, b2 = st.columns([1, 2])
-        with b1:
-            _sb2 = (season_auto.lstrip("초늦") if season_auto else None) or "—"
-            sc_ = SC.get(_sb2, C["gold"]) if _sb2 in SC else C["gold"]
-            s_disp2 = season_label(season_auto, mode) if season_auto else "—"
-            _si2 = _tip(_tip_season(season_auto)) if season_auto else ""
-            st.markdown(f"""<div style="background:{C['card']};border:2px solid {sc_};border-radius:12px;padding:24px;text-align:center">
-                <div style="font-size:var(--mac-fs-md);color:{C['muted']}">자동 판정</div>
-                <div style="font-size:var(--mac-fs-display);font-weight:700;color:{sc_};margin:10px 0">{s_disp2}{_si2}</div>
-                <div style="font-size:var(--mac-fs-md);color:{C['text']}">확신도: {season_conf}</div>
-                <div style="font-size:var(--mac-fs-sm);color:{_anfci_color};margin-top:10px;font-weight:600">금융여건 (ANFCI){_tip(_tip_anfci)} {_anfci_str} · {_anfci_label}</div>
-                <div style="font-size:var(--mac-fs-sm);color:{_cape_color};margin-top:4px;font-weight:600">밸류 (CAPE %ile){_tip(_tip_cape)} {_cape_str} · {_cape_label}</div>
-                <div style="font-size:var(--mac-fs-sm);color:{_recov_color};margin-top:4px;font-weight:600">회복 신호 (ICSA){_tip(_tip_recov)} {_recov_str} · {_recov_label}</div>
-                </div>""", unsafe_allow_html=True)
-        with b2:
-            # V8 분모 가변 (봄/가을 11, 여름/겨울 9)
-            _v8_evals = {sn: len(V8_SEASON_BOXES[sn]) for sn in ("봄","여름","가을","겨울")}
-            _fig_season = go.Figure()
-            for sn in ["봄", "여름", "가을", "겨울"]:
-                _on = int(season_scores.get(sn, 0))
-                _tot = _v8_evals[sn]
-                _fig_season.add_trace(go.Bar(x=[sn], y=[_on], marker_color=SC[sn],
-                              text=[f"{_on}/{_tot}"], textposition="outside", name=sn))
-            _fig_season.update_layout(**_ly("", 250), showlegend=False); _fig_season.update_yaxes(range=[0, 12])
-            st.plotly_chart(_fig_season, use_container_width=True, key="chart_season")
+            b1, b2 = st.columns([1, 2])
+            with b1:
+                _anfci_str = f"{_anfci:+.2f}" if _anfci is not None else "n/a"
+                _cape_str = f"{_cape_pct:.0f}" if _cape_pct is not None else "n/a"
+                _recov_str = f"{_recov_pct:+.1f}%" if _recov_pct is not None else "n/a"
+                _tip_anfci = ("시카고 연준 ANFCI (Adjusted National Financial Conditions Index).\n"
+                              "주식·채권·환·신용 105개 지표를 합성해서 '돈 빌리기 얼마나 어려운가' 를 점수화한다.\n"
+                              "0 = 평균.   양수 = 긴축적 (대출 까다롭고 회사채 스프레드 벌어진다).   음수 = 완화적.\n"
+                              "1.0 넘으면 금융 위기 수준. -0.5 미만이면 돈잔치.\n"
+                              "주간 갱신, 1971+.")
+                _tip_cape = ("Shiller CAPE (10년 평균 이익 PE) 의 직근 20년 분포 백분위.\n"
+                             "100 = 20년 중 가장 비싸다.   50 = 중간.   0 = 20년 최저.\n"
+                             "75% 넘으면 역사적 고평가, 90% 넘으면 거품권.\n"
+                             "현재 비싸냐 싸냐를 묻는 거지 '이게 곧 빠진다' 는 신호 아니다 — 비싼 게 더 비싸질 수도 있다.")
+                _tip_recov = ("미국 신규 실업급여 청구건수 (Initial Claims) 4주 평균이 직근 13주 정점 대비 얼마나 빠졌는가.\n"
+                              "🟢 -10%↓ = 회복 진행 (해고 줄어드는 중)\n"
+                              "🟡 -5%↓ = 회복 시작\n"
+                              "⚪ 0 부근 = 정점 부근\n"
+                              "🔴 양수 = 신규 청구 상승 중 (해고 늘어난다)\n"
+                              "1층이 '겨울' 판정해도 이게 🟢 면 '바닥은 지났다' 신호. 봄 임박 보조 지표.")
+                st.markdown(f"""<div style="background:{C['card']};border:2px solid {_v_color};border-radius:12px;padding:24px;text-align:center">
+                    <div style="font-size:var(--mac-fs-md);color:{C['muted']}">사계절 자동 판정</div>
+                    <div style="font-size:var(--mac-fs-display);font-weight:700;color:{_v_color};margin:10px 0">{_v_disp}{_tip(_tip_season(_v_label))}</div>
+                    <div style="font-size:var(--mac-fs-md);color:{C['text']}">확신도: {_v_conf}</div>
+                    <div style="font-size:var(--mac-fs-sm);color:{_anfci_color};margin-top:10px;font-weight:600">금융여건 (ANFCI){_tip(_tip_anfci)} {_anfci_str} · {_anfci_label}</div>
+                    <div style="font-size:var(--mac-fs-sm);color:{_cape_color};margin-top:4px;font-weight:600">밸류 (CAPE %ile){_tip(_tip_cape)} {_cape_str} · {_cape_label}</div>
+                    <div style="font-size:var(--mac-fs-sm);color:{_recov_color};margin-top:4px;font-weight:600">회복 신호 (ICSA){_tip(_tip_recov)} {_recov_str} · {_recov_label}</div>
+                    </div>""", unsafe_allow_html=True)
+            with b2:
+                _fig_season = go.Figure()
+                for _sn in ["봄", "여름", "가을", "겨울"]:
+                    _on = _scores_for_card.get(_sn, 0)
+                    _tot = _evals_for_card.get(_sn, 0)
+                    _fig_season.add_trace(go.Bar(x=[_sn], y=[_on], marker_color=SC[_sn],
+                                  text=[f"{_on}/{_tot}"], textposition="outside", name=_sn))
+                _fig_season.update_layout(**_ly("", 250), showlegend=False); _fig_season.update_yaxes(range=[0, 12])
+                st.plotly_chart(_fig_season, use_container_width=True, key="chart_season")
 
         # ── V3.10.0 역사 매칭 카드 (top 3 풀 디테일 + 추이 + 사이클 게이지 + 차원 매트릭스) ──
         _hm_era     = _hist_match.get("era")
@@ -9923,29 +9830,46 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
                     </div>{_diff_short}</div>""", unsafe_allow_html=True)
 
         st.markdown("---")
-        st.caption("V8.0 40박스 — 봄 11 / 여름 9 / 가을 11 / 겨울 9. 가장 많이 켜진 계절이 지금 계절.")
+        st.caption("V8.0 40박스 — 봄 11 / 여름 9 / 가을 11 / 겨울 9.")
 
-        # 체크리스트 읽기 전용 표시 (V8 분모 가변)
-        _g = C["green"]; _r = C["red"]; _m = C["muted"]; _cd = C["card"]; _bd = C["border"]; _br = C["bright"]
+        # V8 1층 평가 (40박스)
+        try:
+            _v8_eval = V8L1.evaluate_v8_layer1(V651.M.raw_data, offset=0)
+            _v8_boxes = _v8_eval.get("boxes", {})
+        except Exception:
+            _v8_boxes = {}
+
+        _g = C["green"]; _m = C["muted"]
         c1, c2 = st.columns(2)
         season_icons = {"봄": "🌸", "여름": "☀️", "가을": "🍂", "겨울": "❄️"}
         season_subs = {"봄": SL.get("봄", "금융장세"), "여름": SL.get("여름", "실적장세"),
                        "가을": SL.get("가을", "역금융장세"), "겨울": SL.get("겨울", "역실적장세")}
-        order = ["봄", "가을", "여름", "겨울"]  # 왼쪽: 봄+가을, 오른쪽: 여름+겨울
+
+        def _render_v8_box(_season, _box_id):
+            _label = V8_BOX_LABELS.get(_box_id, _box_id)
+            _val = _v8_boxes.get(_box_id)
+            _help = _SEASON_BOX_HELP.get((_season, _label))
+            _help_i = _tip(_help) if _help else ""
+            if _val is True:
+                _check = "✅"; _color = _g
+            else:
+                _check = "⬜"; _color = _m
+            return f"<span style='color:{_color};font-size:var(--mac-fs-md)'>{_check} {_label}{_help_i}</span>"
+
+        order = ["봄", "가을", "여름", "겨울"]
         for sn in order:
-            items = season_checks.get(sn, [])
             sc_col = SC[sn]; icon = season_icons[sn]; sub = season_subs[sn]
-            cnt = int(season_scores.get(sn, 0))
-            tot = len(V8_SEASON_BOXES.get(sn, []))
             target_col = c1 if sn in ["봄", "가을"] else c2
+            _box_ids = V8_SEASON_BOXES[sn]
+            _on_n = sum(1 for bid in _box_ids if _v8_boxes.get(bid) is True)
+            _total = len(_box_ids)
             with target_col:
-                st.markdown(f"**{icon} {sn}** ({cnt}/{tot}) — <span style='color:{sc_col}'>{sub}</span>", unsafe_allow_html=True)
-                for label, val in items:
-                    check = "✅" if val else "⬜"
-                    color = _g if val else _m
-                    _help = _SEASON_BOX_HELP.get((sn, label))
-                    _help_i = _tip(_help) if _help else ""
-                    st.markdown(f"<span style='color:{color};font-size:var(--mac-fs-md)'>{check} {label}{_help_i}</span>", unsafe_allow_html=True)
+                st.markdown(
+                    f"**{icon} {sn}** ({_on_n}/{_total}) — <span style='color:{sc_col}'>{sub}</span>",
+                    unsafe_allow_html=True,
+                )
+                for bid in _box_ids:
+                    st.markdown(_render_v8_box(sn, bid), unsafe_allow_html=True)
                 st.markdown("<div style='height:12px'></div>", unsafe_allow_html=True)
 
         bc1, bc2 = st.columns(2)
@@ -9967,7 +9891,7 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
 92개 거시 박스 후보 풀에서 ablation × grid search × 답지 채점 4단계 통과 후 최종 40박스. 봄 11 + 여름 9 + 가을 11 + 겨울 9. 모든 박스는 raw count, 가중치 없음. 가산/override/PA 가드 전면 폐기. 단일 임계가 단일 박스를 결정한다.
 
 **검증**
-1980-01 ~ 2024-12 일별 풀 백테스트 11,740 영업일. 5시점 광기 검증 (1999, 2007, 2021, 2024) 통과. 90일 라벨 안정성 평균 3.84 flip / 중간값 2 / P75 6 — 분기당 2회 라벨 변동.
+1980-01 ~ 2024-12 일별 풀 백테스트 11,740 영업일. 5시점 광기 검증 (1999, 2007, 2021, 2024) 통과. 90일 라벨 안정성 평균 3.84 flip / 중간값 2 / P75 6 — 분기당 2회 라벨 변동 (V3 baseline 추정 +28% 안정).
 
 **GT 80 채점 결과 (1980-2024 답지 80건, 2026-04-29 동률 룰 + 전이 규칙 개정 후)**
 
@@ -10021,10 +9945,10 @@ ANFCI = 시카고 연준 105개 거시 합성 (1971+ 주간, 자체 정규화). 
 prefix 는 **사이클 진행 단계 보조 표현**이지 시스템 결론 (best) 자체가 아님. 박스 점수 + best 결정이 본질, prefix 는 단지 base 라벨 옆에 붙는 한국어 어휘.
 
 **한계**
-1995 이전 시점 = 박스 평가 가능 수 < 30 (전체 40 중) → 신뢰도 낮음. fpe historical 시계열 부재. prefix(초/늦) 룰은 V69 비율 그대로 적용 — 답지 검증 안 거침, 직관 보조용. F8 반사성 / B등급 (실적 / 부채/GDP / 배당수익률) 박스 보류. **봄 47% 한계는 박스 카운트 시스템의 구조적 floor** — 4가지 박스 보강 방안 (S_CROSS 게이트화, S_ICSA1 1층 승격, S_DIFF1 4지표 확산, S_DUAL 이중 임계) 시도 결과 모두 trade-off 발생 (봄 +N 시 다른 계절 -M). 회복 신호 2층 + 전이 규칙으로 보완.
+1995 이전 시점 = 박스 평가 가능 수 < 30 (전체 40 중) → 신뢰도 낮음. fpe historical 시계열 부재 (forward consensus 데이터 없음). prefix(초/늦) 룰은 V69 비율 그대로 적용 — 답지 검증 안 거침, 직관 보조용. F8 반사성 / B등급 (실적 / 부채/GDP / 배당수익률) 박스 보류. **봄 47% 한계는 박스 카운트 시스템의 구조적 floor** — 4가지 박스 보강 방안 (S_CROSS 게이트화, S_ICSA1 1층 승격, S_DIFF1 4지표 확산, S_DUAL 이중 임계) 시도 결과 모두 trade-off 발생 (봄 +N 시 다른 계절 -M). 회복 신호 2층 + 전이 규칙으로 보완.
 
 **권하지 않는 사용**
-단기 매매 시그널. 단일 박스 점등으로 전환 판단. 1995 이전 시점 backtest 결과 절대 신뢰. prefix(초/늦)를 시점 진단 핵심 기준으로 사용. 박스 점수가 절대 임계가 아니라 분포 통과 임계라는 점 잊으면 안 된다.
+단기 매매 시그널 (월 단위 라벨이라 일간 진동에 못 따라간다). 단일 박스 점등으로 전환 판단 (다중 박스 누적 점수가 본질). 1995 이전 시점 backtest 결과 절대 신뢰. prefix(초/늦)를 시점 진단 핵심 기준으로 사용 (보조용일 뿐). 박스 점수가 절대 임계가 아니라 분포 통과 임계라는 점 잊으면 안 된다.
 
 </div>""", unsafe_allow_html=True)
 
@@ -10397,7 +10321,7 @@ prefix 는 **사이클 진행 단계 보조 표현**이지 시스템 결론 (bes
                     "__era_heatmap":        ("🔥 era 안정성 heatmap",     "1위 점유 era 의 매칭률 시간 분포. 색 길면 안정, 띄엄띄엄이면 노이즈."),
                     "__seasonal_overlay":   ("📅 월별 누적수익률 비교",   "최근 N년 1월~12월 누적 수익률 overlay. 올해가 평년 대비 어떤지."),
                     "__seasonal_heatmap":   ("🗓 월별 수익률 히트맵",     "최근 N년 월별 수익률 매트릭스. 어느 월이 강하고 약한지."),
-                    # === 관측소 지표들 (가공, obs) ===
+                    # === 미어캣의 관측소 지표들 (가공, obs) ===
                     "mac_score":     ("거시 스코어", "거시 환경이 얼마나 사기 좋은가. 0~100, 높을수록 우호적."),
                     "meerkat_score": ("미어캣 스코어", "내 계좌 포지션이 얼마나 사기 좋은 상태인가. 현금비중·DD 등 반영."),
                     "mac_velocity":  ("거시 속도", "거시 스코어의 30일 변화량. 위치보다 속도, 속도보다 가속도."),
@@ -10459,6 +10383,14 @@ prefix 는 **사이클 진행 단계 보조 표현**이지 시스템 결론 (bes
                     "f6_eps_chg_30d":   ("F6: Forward EPS 변화 (%)", "분석가 컨센서스 30일 변화 (누적 30일 미만이면 가용 max lookback). 가격을 따라가면 반사성."),
                     "f6_spx_chg_30d":   ("F6: SPX 변화 (%)", "S&P500 동기간 변화. EPS와 같이 보면 반사성 진단."),
                     "f6_lookback_days": ("F6: 실제 lookback (일)", "30일이면 본 정의, 미만이면 partial. 30일 채워질 때까지 임시값."),
+                    # V3.9.1 역사 매칭
+                    "history_era_top1":   ("역사 매칭 1위 era id", "ERA_LIBRARY 32개 중 1위 era id (1929~2018). 임계 0.55 미달 시 None."),
+                    "history_era_label":  ("역사 매칭 1위 라벨", "사람이 읽는 라벨."),
+                    "history_score_top1": ("역사 매칭 1위 점수", "10차원 가중 일치도 0~1. 임계 0.55."),
+                    "history_era_top2":   ("역사 매칭 2위 era id", "두번째로 가까운 era. 시기 안정성 검증용."),
+                    "history_score_top2": ("역사 매칭 2위 점수", "0~1."),
+                    "history_era_top3":   ("역사 매칭 3위 era id", "세번째로 가까운 era."),
+                    "history_score_top3": ("역사 매칭 3위 점수", "0~1."),
                     # === Δ30D / ΔΔ (속도와 가속도) ===
                     "mac_delta":          ("거시 Δ30D", "거시 스코어 30일 변화량 (속도)."),
                     "mac_delta_delta":    ("거시 ΔΔ", "거시 스코어 2차 도함수 (가속도)."),
@@ -10638,7 +10570,7 @@ prefix 는 **사이클 진행 단계 보조 표현**이지 시스템 결론 (bes
                             return (_idx, _sub[key].values, "obs")
                     return None
 
-                # V3.10.1 / V3.11.1: 특수 renderer 분기 (era 시각화 + 달력 계절성)
+                # V3.10.1: 역사 매칭 시각화 — pseudo-key 분기
                 _ssel_specials = [s for s in (_ssel or []) if s.startswith("__")]
                 _ssel_normal   = [s for s in (_ssel or []) if not s.startswith("__")]
                 _ERA_RENDERERS = {
@@ -10760,6 +10692,14 @@ prefix 는 **사이클 진행 단계 보조 표현**이지 시스템 결론 (bes
                 "F6: Forward EPS 변화 (%)": "f6_eps_chg_30d",
                 "F6: SPX 변화 (%)": "f6_spx_chg_30d",
                 "F6: 실제 lookback (일)": "f6_lookback_days",
+                # V3.9.1 역사 매칭
+                "역사 매칭 1위 era id": "history_era_top1",
+                "역사 매칭 1위 라벨":   "history_era_label",
+                "역사 매칭 1위 점수":   "history_score_top1",
+                "역사 매칭 2위 era id": "history_era_top2",
+                "역사 매칭 2위 점수":   "history_score_top2",
+                "역사 매칭 3위 era id": "history_era_top3",
+                "역사 매칭 3위 점수":   "history_score_top3",
                 # 거시 Δ/ΔΔ
                 "거시 Δ30D (속도)": "mac_delta",
                 "거시 ΔΔ (가속도)": "mac_delta_delta",
@@ -10819,6 +10759,13 @@ prefix 는 **사이클 진행 단계 보조 표현**이지 시스템 결론 (bes
                 "f6_eps_chg_30d": "Forward EPS 컨센서스 30일 변화 % (누적 30일 미만이면 가용 max lookback).",
                 "f6_spx_chg_30d": "S&P500 동기간 변화 %. EPS와 같이 보면 반사성 진단.",
                 "f6_lookback_days": "F6 계산에 실제로 사용된 lookback 일수. <30 이면 임시값 (partial).",
+                "history_era_top1":   "ERA_LIBRARY 32개 (1929~2018) 중 1위 era id. 임계 0.55 미달 시 None.",
+                "history_era_label":  "1위 era 의 사람 라벨.",
+                "history_score_top1": "10차원 가중 일치도 0~1. 임계 0.55.",
+                "history_era_top2":   "2위 era id.",
+                "history_score_top2": "0~1.",
+                "history_era_top3":   "3위 era id.",
+                "history_score_top3": "0~1.",
                 "mac_delta": "거시 스코어 Δ30D = 최근 7일 평균 - 30일 전 7일 평균.",
                 "mac_delta_delta": "거시 스코어 ΔΔ = 속도의 속도. 전환점 신호.",
                 "cluster_bond_delta": "채권/금리 클러스터 30일 변화량.",
@@ -10865,7 +10812,6 @@ prefix 는 **사이클 진행 단계 보조 표현**이지 시스템 결론 (bes
         st.caption("임의 연/월 입력 → 그 시점 매크로 진단. 데이터 우선순위: 실측 → 백필 → 즉석계산.")
         from datetime import date as _qd_date
         _today_q = _qd_date.today()
-        # 시점 조회 전용 long-range raw — 사이드바 '관찰 기간' 무시, yfinance max + FRED 1990~
         with st.spinner("장기 시계열 준비 중 (최초 1회 ~30초, 24h 캐싱)..."):
             _qraw = _build_long_range_raw(api_key)
         _q_starts = []
@@ -10964,11 +10910,5 @@ prefix 는 **사이클 진행 단계 보조 표현**이지 시스템 결론 (bes
                 st.caption(f"⚠️ 다운로드 빌드 실패: {type(_qee).__name__}: {_qee}")
 
     st.markdown("---"); st.markdown(f"> *{dq()}*")
-
-    st.markdown(f"""
-<div style='text-align:center; opacity:0.55; font-size:0.8em; padding:12px;'>
-미어캣의 관측소 v{VERSION} · 작성: {__author__}
-</div>
-""", unsafe_allow_html=True)
 
 if __name__ == "__main__": main()

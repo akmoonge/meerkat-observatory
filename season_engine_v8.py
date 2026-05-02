@@ -6,7 +6,7 @@
    2026-04-29 도함수 — S_B4 (봄 채권금리곡선 급개선) + A_B4 (가을 채권금리곡선 급악화) 2박스.
    사용자 권고 38박스 채점은 ablation 스크립트의 keep set 으로 결정.
 
-원본 (meerkat_observatory.py / season_engine_core.py / season_classifier_v651.py) 무수정.
+원본 (meerkat_observatory.py / season_engine_core.py / season_engine_v69.py) 무수정.
 
 설계 (사용자 2026-04-29 명세서):
   - 1층 = 현재 경제 상태. 봄/여름/가을/겨울.

@@ -105,13 +105,8 @@ A6_SPX_DD_THRESH = 5.0     # V3.15.5 = 5
 
 # V6.6.5 확장: 공통 박스 가을 분기 임계 (D grid)
 C1_AUTUMN_OPT = 0          # 0=all 3 (entering+deepening+deep_stable), 1=deepening+deep_stable, 2=deep_stable only
-C2_HY_6M_THRESH = 0.0      # hy_6m_chg > X. V3.15.5 = 0
 C5_SOX_DELTA_THRESH = 0.0  # sox_3m < spx_3m - X. V3.15.5 = 0
 C5_SOX_1M_THRESH = 0.0     # sox_1m < X. V3.15.5 없음 (None 검사만)
-
-# V6.7 ablation: 점등된 박스를 score 집계에서 완전 제외 (분모/분자 모두)
-# 예: ABLATE_BOXES = {"A1", "C3"} → A1, C3 박스 무효화
-ABLATE_BOXES = set()
 
 # V6.8 미세 조정 lever (오푸스 권고 grid 용)
 AUTUMN_BONUS_SCALE = 0.0    # 0.0=폐지(V6.8), 0.5=절반, 1.0=원본(V6.7)
@@ -307,13 +302,6 @@ def _evaluate_12box_at_offset(raw, offset):
         "가을": _v(inv_state_3m10y in c1_autumn_set, inv_state_3m10y),
         "겨울": _v(inv_state_3m10y == "recovering", inv_state_3m10y),
     }
-    # C2: HY OAS [모듈 임계: C2_HY_6M_THRESH]
-    C2 = {
-        "봄":   _v(hy_pct is not None and hy_pct < 4 and hy_6m_chg is not None and hy_6m_chg < 0, hy_pct, hy_6m_chg),
-        "여름": _v(hy_pct is not None and hy_pct < 4, hy_pct),
-        "가을": _v(hy_6m_chg is not None and hy_6m_chg > C2_HY_6M_THRESH, hy_6m_chg),
-        "겨울": _v(hy_pct is not None and hy_pct > 5, hy_pct),
-    }
     # C3: 2Y10Y 보조 채권금리곡선 (V6.6.1 baseline = V3.15.5 원형)
     C3 = {
         "봄":   _v(inv_state_2y10y == "recovering", inv_state_2y10y),
@@ -354,7 +342,7 @@ def _evaluate_12box_at_offset(raw, offset):
         "가을": None if not has_val else val_high,
         "겨울": None if not has_val else val_high,
     }
-    common = [C1, C2, C3, C4, C5, C6]
+    common = [C1, C3, C4, C5, C6]
 
     # ───────────────────────────── 봄 고유 6박스 (재정의: 직전 충격 흔적 필수) ─────────────────────────────
     # HY 데이터 부재 시 공통 fallback:
@@ -399,7 +387,6 @@ def _evaluate_12box_at_offset(raw, offset):
     else:
         spring["S2"] = any(s2_components)
 
-    spring["S3"] = None  # 영구 None — eg_yoy 시계열 부재
     spring["S4"] = _v(cpi_3m_chg is not None and cpi_3m_chg < 0 and cpi_now is not None and cpi_now < 3, cpi_3m_chg, cpi_now)
     # S5: un_now ≥ 4 AND un_3m_chg < 0.2 AND un_max_1y ≥ 5.5  (임계 강화)
     spring["S5"] = _v(un_now is not None and un_now >= 4
@@ -410,14 +397,13 @@ def _evaluate_12box_at_offset(raw, offset):
 
     # ───────────────────────────── 여름 고유 6박스 ─────────────────────────────
     summer = {}
-    summer["Su1"] = _v(hy_pct is not None and hy_pct < 4, hy_pct)  # (C2 여름과 중복이지만 명세 대로)
+    summer["Su1"] = _v(hy_pct is not None and hy_pct < 4, hy_pct)
     summer["Su2"] = _v(un_3m_chg is not None and un_3m_chg <= 0
                        and payems_3m_avg_thousands is not None and payems_3m_avg_thousands > 150,
                        un_3m_chg, payems_3m_avg_thousands)
     summer["Su3"] = _v(t5yifr_now is not None and t5yifr_now < 2.5, t5yifr_now)
     summer["Su4"] = _v(rsp_6m is not None and qqq_6m is not None and rsp_6m > 0 and qqq_6m > 0, rsp_6m, qqq_6m)
     summer["Su5"] = _v(cpi_3m_chg is not None and abs(cpi_3m_chg) < 0.5, cpi_3m_chg)
-    summer["Su6"] = _v(dxy_6m_chg_pct is not None and abs(dxy_6m_chg_pct) < 5, dxy_6m_chg_pct)
 
     # ───────────────────────────── 가을 고유 6박스 V6.6.x (모듈 globals 임계) ─────────────────────────────
     autumn = {}
@@ -480,16 +466,35 @@ def _evaluate_12box_at_offset(raw, offset):
     # ── V3.14 prototype V2.0 가중치 (가을 박스 재배치 반영) ──
     # 가을 매핑: A1=신용확대(1.0), A2=변동성체제(1.5), A3=반도체약세(1.5), A4=메가캡(1.5), A5=PER극단(1.0), A6=충격진입(1.0)
     # 가을 ΣW = 7.5(공통) + 7.5(고유) = 15.0 (이전과 동일)
-    # V6.8: A2/A3/A4 1.5→1.0 (가을 ΣW 15.0→13.5, 다른 계절과 대칭)
+    # V6.9: A2/A3/A4 1.5→1.0 (가을 ΣW 대칭). C2/Su6/S3 박스 영구 삭제.
     W = {
-        "C1": 1.5, "C2": 1.0, "C3": 1.5, "C4": 1.0, "C5": 1.5, "C6": 1.0,
-        "S1": 1.0, "S2": 1.5, "S3": 1.0, "S4": 0.5, "S5": 0.5, "S6": 1.5,
-        "Su1": 1.0, "Su2": 0.5, "Su3": 1.0, "Su4": 1.0, "Su5": 1.0, "Su6": 1.0,
+        "C1": 1.5, "C3": 1.5, "C4": 1.0, "C5": 1.5, "C6": 1.0,
+        "S1": 1.0, "S2": 1.5, "S4": 0.5, "S5": 0.5, "S6": 1.5,
+        "Su1": 1.0, "Su2": 0.5, "Su3": 1.0, "Su4": 1.0, "Su5": 1.0,
         "A1": 1.0, "A2": 1.0, "A3": 1.0, "A4": 1.0, "A5": 1.0, "A6": 1.0,
         "W1": 1.0, "W2": 0.5, "W3": 1.0, "W4": 0.5, "W5": 1.0, "W6": 1.5,
     }
     if W_OVERRIDE: W.update(W_OVERRIDE)  # V6.8 grid lever
-    common_keys = ["C1", "C2", "C3", "C4", "C5", "C6"]  # V6.6.3: C3 복원
+    common_keys = ["C1", "C3", "C4", "C5", "C6"]
+
+    # V7.0 광기 가드 (Opus V3 권고): CAPE≥30 AND CAPE_pct≥85 시 봄/여름 고유 박스 점등 차단.
+    # CAPE 단독으로는 1980-90s 회복기 false-positive (답지 -5.8%p) → 백분위 동반 가드로 광기만 좁힘.
+    _cape_extreme = (cape_now is not None and cape_now >= 30
+                     and cape_20y_pct is not None and cape_20y_pct >= 85)
+    if _cape_extreme:
+        for _k in ["S1", "S2", "S4", "S5", "S6"]:
+            if spring.get(_k) is True:
+                spring[_k] = None
+        for _k in ["Su1", "Su2", "Su3", "Su4", "Su5"]:
+            if summer.get(_k) is True:
+                summer[_k] = None
+
+    # V6.9 UI: 박스 boolean dict 글로벌 저장 (get_box_states_at_offset 가 읽음)
+    global _LAST_BOX_STATES
+    _LAST_BOX_STATES = {
+        "공통": {ck: dict(cdict) for ck, cdict in zip(common_keys, common)},
+        "봄": dict(spring), "여름": dict(summer), "가을": dict(autumn), "겨울": dict(winter),
+    }
 
     seasons_unique = {"봄": spring, "여름": summer, "가을": autumn, "겨울": winter}
     raw_scores = {}; valid_counts = {}
@@ -497,16 +502,14 @@ def _evaluate_12box_at_offset(raw, offset):
 
     for sname, unique in seasons_unique.items():
         ws_total = 0.0; svw = 0.0; true_n = 0; valid_n = 0
-        # 공통 6박스
+        # 공통 박스
         for ck, cdict in zip(common_keys, common):
-            if ck in ABLATE_BOXES: continue  # V6.7 ablation
             v = cdict[sname]
             if v is None: continue
             valid_n += 1; svw += W[ck]
             if v: true_n += 1; ws_total += W[ck]
         # 고유 박스
         for uk, uv in unique.items():
-            if uk in ABLATE_BOXES: continue  # V6.7 ablation
             if uv is None: continue
             valid_n += 1; svw += W[uk]
             if uv: true_n += 1; ws_total += W[uk]
@@ -556,9 +559,13 @@ def _evaluate_12box_at_offset(raw, offset):
     hy_recovering = True
     if hy_pct is not None and hy_6m_chg is not None:
         hy_recovering = (hy_pct < 7 and hy_6m_chg < 1)
+    # V7.0 광기 가드: CAPE≥30 AND CAPE_pct≥85 시 봄 회복 가산 차단 (광기 시점 단기 반등은 회복 X)
+    _cape_guard_ok = not (cape_now is not None and cape_now >= 30
+                          and cape_20y_pct is not None and cape_20y_pct >= 85)
     spring_recovery_active = (spx_3m is not None and spx_3m > 5
                               and spx_6m_max_dd_local is not None and spx_6m_max_dd_local > 10
-                              and hy_recovering)
+                              and hy_recovering
+                              and _cape_guard_ok)
     if spring_recovery_active:
         autumn_bonus *= 0.2
         winter_bonus *= 0.2
@@ -590,11 +597,12 @@ def _evaluate_12box_at_offset(raw, offset):
     if all(ws == 0 for ws in weighted_scores.values()):
         return None, raw_scores, valid_counts, weighted_scores, sum_valid_w, weighted_ratios, ""
 
-    # 비율 기준 최고 계절 선정
+    # V8.0 (Opus V4): 분자 절대값 기준 최고 계절 선정 (ratio noise 변환 폐기).
+    # weighted_ratios 는 박스 1개 점등으로 ratio 폭증하는 분모 noise 문제 발생 (V3 자문).
+    # weighted_scores (분자만) 비교 = "박스 많이 켜진 계절이 1위" 정직한 카운트.
     _SO = ["봄", "여름", "가을", "겨울"]
-    max_r = max(weighted_ratios.values())
-    # 동률 시 사이클 후순위 (시장은 앞으로 간다) — production auto_season L1262-1264 패턴
-    best = next(s for s in reversed(_SO) if abs(weighted_ratios[s] - max_r) < 1e-9)
+    max_r = max(weighted_scores.values())
+    best = next(s for s in reversed(_SO) if abs(weighted_scores[s] - max_r) < 1e-9)
 
     # 접두사: prev/next weighted_score ≥ 4.0
     bi = _SO.index(best)
@@ -607,6 +615,38 @@ def _evaluate_12box_at_offset(raw, offset):
         prefix = ""
 
     return best, raw_scores, valid_counts, weighted_scores, sum_valid_w, weighted_ratios, prefix
+
+
+# ═══ V6.9 UI 용 박스 boolean 노출 helper ═══
+# 47박스 (공통 C1-C6 × 4 + 고유 S/Su/A/W 각 6) boolean dict 반환.
+# 각 박스: True (점등) / False (꺼짐) / None (평가 불가). ABLATE_BOXES 박스는 dict 에서 제외.
+def get_box_states_at_offset(raw, offset):
+    """V6.9 UI 용 박스 boolean dict 반환.
+    return = {
+        "공통": {"C1": {"봄": bool/None, "여름": ..., "가을": ..., "겨울": ...}, ...},
+        "봄": {"S1": bool/None, ..., "S6": ...},
+        "여름": {"Su1": ..., ..., "Su6": ...},
+        "가을": {"A1": ..., ..., "A6": ...},
+        "겨울": {"W1": ..., ..., "W6": ...},
+    }
+    내부 evaluator 와 동일한 사이드 로직 거치되 결과만 추출.
+    """
+    # _evaluate_12box_at_offset 내부 로직과 일치해야 함. 가장 안전한 방법:
+    # 그 함수를 한 번 호출해서 box dict 생성 후 return.
+    # 단 evaluator 가 box dict 를 return 안 하므로, monkeypatch 대신 별도 helper 로 분리.
+    # 빠른 구현: evaluator 의 box 생성 부분을 외부에서 다시 한 번 실행 (signal 추출 → box 생성).
+    # _evaluate_12box_at_offset 가 매우 길어 중복 위험 → 차선: evaluator 호출 + box 추출 위해
+    # evaluator 자체를 수정. 여기서는 evaluator 가 module global 에 마지막 box dict 를 저장하게 한 후 읽기.
+    global _LAST_BOX_STATES
+    _LAST_BOX_STATES = None
+    try:
+        _evaluate_12box_at_offset(raw, offset)
+    except Exception:
+        pass
+    return _LAST_BOX_STATES
+
+
+_LAST_BOX_STATES = None  # evaluator 가 마지막 호출 시 채움
 
 
 # ═══ 데이터 로딩 — 라이브러리 모드 (build_raw_data() 호출 시에만 실행) ═══
@@ -770,7 +810,7 @@ DATES_50 = [
     ("2021-11-30", "Powell 인플레 일시적 철회"),
     ("2022-03-31", "긴축 시작 직전"),
     ("2022-06-30", "인플레 정점, 긴축 한복판"),
-    ("2022-11-30", "긴축 끝물, long pivot 시점"),
+    ("2022-11-30", "긴축 끝물, 거시 long pivot 시점"),
     ("2023-03-31", "SVB 충격"),
     ("2023-10-31", "10년물 5% 돌파"),
     ("2024-04-30", "인플레 끈적임 복귀"),
