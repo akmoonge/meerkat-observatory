@@ -382,12 +382,21 @@ def _auto_backup():
             today_dir.mkdir(parents=True, exist_ok=True)
             import shutil
             # 백업 대상: 누적 히스토리 + 상태 + 관측 로그
+            # V3.10.6: forward_pe.json (수동 누적 PE) + mac_score_history.v35.json (구버전 히스토리) 추가
+            #          및 historical_loader 캐시 (cape/hy_oas/trailing_earnings)도 저장 (사용자가 수동 갱신했을 경우 대비)
             _targets = [
                 SD / "state.json", SD / "config.json", SD / "presets.json",
                 SD / "cache" / "forward_eps_history.json",
+                SD / "cache" / "forward_pe.json",
                 SD / "cache" / "mac_score_history.json",
+                SD / "cache" / "mac_score_history.v35.json",
+                SD / "cache" / "cape_history.json",
+                SD / "cache" / "hy_oas_history.json",
+                SD / "cache" / "trailing_earnings_history.json",
                 SD / "history" / "observations.jsonl",
                 SD / "history" / "backfill_done.json",
+                SD / "observations.jsonl",
+                SD / "backfill_done.json",
             ]
             for src in _targets:
                 try:
@@ -1156,12 +1165,18 @@ def _dc_set(key, data):
 
 def _dc_clear():
     """디스크 캐시 전체 삭제.
-    누적 히스토리 파일(forward_eps_history.json, mac_score_history.json)은 보존한다.
-    해시 16자 파일명 캐시만 지우도록 제한."""
+    누적 히스토리 파일(forward_eps_history.json, forward_pe.json, mac_score_history.json,
+    mac_score_history.v35.json) 및 historical_loader 시계열 (cape/hy_oas/trailing_earnings)은 보존한다.
+    해시 16자 파일명 캐시만 지우도록 제한 (V3.10.6: keep set 확장)."""
     if CACHE_DIR.exists():
         import re
         _hex16 = re.compile(r"^[0-9a-f]{16}\.json$")
-        _keep = {"forward_eps_history.json", "mac_score_history.json"}
+        _keep = {
+            "forward_eps_history.json", "forward_pe.json",
+            "mac_score_history.json", "mac_score_history.v35.json",
+            "cape_history.json", "hy_oas_history.json",
+            "trailing_earnings_history.json",
+        }
         for f in CACHE_DIR.glob("*.json"):
             if f.name in _keep: continue
             if not _hex16.match(f.name): continue
