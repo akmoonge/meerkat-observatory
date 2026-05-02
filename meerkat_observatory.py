@@ -470,7 +470,14 @@ def _self_update():
     """
     import urllib.request, hashlib
     APP_DIR = Path(__file__).parent
-    targets = ["meerkat_observatory.py", "meerkat_observatory.bat", "install.bat"]
+    targets = [
+        "meerkat_observatory.py", "meerkat_observatory.bat", "install.bat",
+        # 엔진 모듈 — main 파일 변경 시 함께 변경되는 경우 많아 동시 동기화 필수
+        "season_engine_core.py", "season_engine_v69.py",
+        "season_engine_v8.py", "season_engine_v8_helpers.py",
+        "season_engine_vulnerability.py",
+        "historical_loader.py", "short_term_alerts.py",
+    ]
     updated, failed = [], []
     for fn in targets:
         try:
