@@ -114,14 +114,23 @@ _RAW_PICKLE_TTL_HOURS = 24
 
 
 def _load_pickled_raw_if_fresh():
-    """디스크 캐시 raw_data 로드 (TTL 24h). 없거나 stale 시 None."""
+    """디스크 캐시 raw_data 로드 (TTL 24h). 없거나 stale 시 None.
+    무결성 검증: 핵심 시계열(cape_s, hy_s, fpe_s)이 비어있거나 None이면 stale로 간주하고 rebuild.
+    이전 historical_loader 깨진 상태에서 저장된 pickle 영구 사용 방지 (V3.10.6 hotfix)."""
     import time, pickle
     if not _RAW_PICKLE.exists(): return None
     try:
         age_hours = (time.time() - _RAW_PICKLE.stat().st_mtime) / 3600
         if age_hours > _RAW_PICKLE_TTL_HOURS: return None
         with open(_RAW_PICKLE, "rb") as f:
-            return pickle.load(f)
+            cached = pickle.load(f)
+        # 무결성 검증 — 핵심 historical 시계열 누락 시 None 반환 (= rebuild 트리거)
+        for _key in ("cape_s", "hy_s"):
+            _s = cached.get(_key) if isinstance(cached, dict) else None
+            if _s is None or (hasattr(_s, "__len__") and len(_s) == 0):
+                print(f"[pickle integrity] {_key} empty/None → discard stale pickle, rebuild")
+                return None
+        return cached
     except Exception:
         return None
 
