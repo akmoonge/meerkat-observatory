@@ -36,6 +36,7 @@ __created__ = "2026-04"
 
 import streamlit as st, pandas as pd, numpy as np, plotly.graph_objects as go, json, warnings
 import plotly.io as pio
+import streamlit.components.v1 as components
 from datetime import datetime, timedelta, date as _date
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -7670,6 +7671,72 @@ def main():
     def _jbtn(data, prefix, label="📥 JSON Export", key_sfx=""):
         st.download_button(label, json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"),
                            f"{prefix}_{_ds}.json", "application/json", key=f"exp_{prefix}{key_sfx}")
+
+    # ═══ 클립보드 복사 헬퍼 (JSON 복사 / 내용 복사) ═══
+    _TEXT_SKIP = {"version"}
+    def _fmt_val(v):
+        if v is None: return "—"
+        if isinstance(v, bool): return "예" if v else "아니오"
+        if isinstance(v, float):
+            if v != v: return "—"
+            return f"{v:.4f}".rstrip('0').rstrip('.') if abs(v) < 1000 else f"{v:,.2f}"
+        return str(v)
+    def _to_text(data, section_name, indent=0):
+        """JSON dict → 사람 읽기 좋은 한국어 텍스트. 중첩 dict 들여쓰기, list 불릿."""
+        lines = []
+        pad = "  " * indent
+        if indent == 0:
+            _date = data.get("date", _ds)
+            lines.append(f"📊 {section_name} — {_date}")
+            lines.append("─" * 40)
+        for k, v in data.items():
+            if k in _TEXT_SKIP: continue
+            if indent == 0 and k == "date": continue
+            if isinstance(v, dict):
+                if not v: continue
+                lines.append(f"{pad}▸ {k}:")
+                lines.append(_to_text(v, section_name, indent + 1))
+            elif isinstance(v, list):
+                if not v: continue
+                lines.append(f"{pad}▸ {k}:")
+                for item in v:
+                    if isinstance(item, dict):
+                        lines.append(_to_text(item, section_name, indent + 1))
+                    elif isinstance(item, (list, tuple)):
+                        lines.append(f"{pad}  • " + " · ".join(_fmt_val(x) for x in item))
+                    else:
+                        lines.append(f"{pad}  • {_fmt_val(item)}")
+            else:
+                lines.append(f"{pad}▸ {k}: {_fmt_val(v)}")
+        return "\n".join(lines)
+
+    def _copy_buttons(data, section_name, key_prefix):
+        """JSON 복사 + 내용 복사 버튼 2개 (HTML/JS 클립보드)."""
+        j_str = json.dumps(data, ensure_ascii=False, indent=2)
+        t_str = _to_text(data, section_name)
+        def _js_lit(s):
+            return json.dumps(s).replace("</", "<\\/")
+        j_js = _js_lit(j_str)
+        t_js = _js_lit(t_str)
+        btn_style = "background:#1f2937;color:#fafafa;border:1px solid #4b5563;border-radius:6px;padding:8px 14px;cursor:pointer;font-size:13px;flex:1;font-family:inherit"
+        html = (
+            '<div style="display:flex;gap:8px;margin:4px 0">'
+            f'<button id="cb_j_{key_prefix}" style="{btn_style}">📋 JSON 복사</button>'
+            f'<button id="cb_t_{key_prefix}" style="{btn_style}">📝 내용 복사</button>'
+            '</div>'
+            '<script>'
+            f'(function(){{'
+            f'var jdata={j_js};var tdata={t_js};'
+            f'var bj=document.getElementById("cb_j_{key_prefix}");'
+            f'var bt=document.getElementById("cb_t_{key_prefix}");'
+            f'function flash(b,msg){{var o=b.innerText;b.innerText=msg;setTimeout(function(){{b.innerText=o;}},1500);}}'
+            f'if(bj)bj.onclick=function(){{navigator.clipboard.writeText(jdata).then(function(){{flash(bj,"✓ JSON 복사됨");}});}};'
+            f'if(bt)bt.onclick=function(){{navigator.clipboard.writeText(tdata).then(function(){{flash(bt,"✓ 내용 복사됨");}});}};'
+            f'}})();'
+            '</script>'
+        )
+        components.html(html, height=55)
+
     def _export_html(data, title="미어캣의 관측소", charts=None, section=None):
         """HTML 리포트 생성. charts: list of (fig, title) plotly figures. section: 섹션명(None=전체)."""
         _skip = {"date", "version", "계절_점수", "거시_스코어_분해", "미어캣_스코어_분해",
@@ -9036,6 +9103,8 @@ tr:hover{{background:#263238}}
                 _jbtn(export_timeseries, "timeseries", "📥 시계열 원본 (252일)", "_ts")
                 if _obs_all:
                     st.download_button("📥 관찰 기록 일괄", json.dumps(_obs_all, ensure_ascii=False, indent=2).encode("utf-8"), f"observations_{_ds}.json", "application/json", key="exp_obs_all")
+            st.markdown("<div style='margin-top:8px;font-size:12px;color:#9ca3af'>📋 클립보드 복사 — 대시보드 전체</div>", unsafe_allow_html=True)
+            _copy_buttons(export_all, "대시보드 전체", "dash_all")
         with st.expander("📄 HTML Export — 브라우저 열람 · 공유용"):
             eh1, eh2, eh3 = st.columns(3)
             with eh1: st.download_button("📥 전체 리포트 (차트 포함)", _export_html(export_all, charts=_all_charts).encode("utf-8"), f"observatory_{_ds}.html", "text/html", key="exp_html")
@@ -9336,6 +9405,7 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
             st.download_button("📥 쌍발 엔진 HTML",
                 _export_html(export_engines, section="쌍발 엔진").encode("utf-8"),
                 f"engines_{_ds}.html", "text/html", key="exp_eng_html")
+        _copy_buttons(export_engines, "쌍발 엔진", "eng")
 
     # ═══ TAB 2: 채권/금리 ═══
     with tabs[2]:
@@ -9555,6 +9625,7 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
         st.markdown("---")
         _jbtn(export_bond, "bond", "📥 채권/금리 JSON", "_bond")
         st.download_button("📥 채권/금리 HTML", _export_html(export_bond, section="채권/금리", charts=[(_fig_bond, "장단기금리차")] if _fig_bond else None).encode("utf-8"), f"bond_{_ds}.html", "text/html", key="exp_bond_html")
+        _copy_buttons(export_bond, "채권/금리", "bond")
 
     # ═══ TAB 2: 밸류에이션 ═══
     with tabs[3]:
@@ -9596,6 +9667,7 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
         st.markdown("---")
         _jbtn(export_valuation, "valuation", "📥 밸류에이션 JSON", "_val")
         st.download_button("📥 밸류에이션 HTML", _export_html(export_valuation, section="밸류에이션").encode("utf-8"), f"valuation_{_ds}.html", "text/html", key="exp_val_html")
+        _copy_buttons(export_valuation, "밸류에이션", "val")
 
     # ═══ TAB 3: 반도체 ═══
     with tabs[4]:
@@ -9622,6 +9694,7 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
         st.markdown("---")
         _jbtn(export_semi, "semi", "📥 반도체 JSON", "_semi")
         st.download_button("📥 반도체 HTML", _export_html(export_semi, section="반도체", charts=[(_fig_semi, "SOX/SPX 비율")] if _fig_semi else None).encode("utf-8"), f"semi_{_ds}.html", "text/html", key="exp_semi_html")
+        _copy_buttons(export_semi, "반도체", "semi")
 
     # ═══ TAB 4: 계절 판단 ═══
     with tabs[5]:
@@ -9963,6 +10036,7 @@ KRW: FRED DEXKOUS | WTI: FRED DCOILWTICO | DXY: yfinance DX-Y.NYB</div>""", unsa
         with bc2:
             _jbtn(export_season_d, "season", "📥 계절 판단 JSON", "_season")
             st.download_button("📥 계절 HTML", _export_html(export_season_d, section="계절 판단", charts=[(_fig_season, "계절 점수")] if _fig_season else None).encode("utf-8"), f"season_{_ds}.html", "text/html", key="exp_season_html")
+        _copy_buttons(export_season_d, "계절 판단", "season")
 
         # ─── 📐 이 판정기에 대해 (설계 / 검증 / 신뢰도 / 한계) ───
         st.markdown("---")
@@ -10070,6 +10144,7 @@ prefix 는 **사이클 진행 단계 보조 표현**이지 시스템 결론 (bes
         st.markdown("---")
         if _obs_all:
             st.download_button("📥 관찰 기록 일괄 JSON", json.dumps(_obs_all, ensure_ascii=False, indent=2).encode("utf-8"), f"observations_{_ds}.json", "application/json", key="exp_obs_tab")
+            _copy_buttons({"관찰_기록": _obs_all}, "관찰 기록", "obs")
         for f in lobs()[:12]:
             try:
                 d = json.loads(f.read_text("utf-8"))
